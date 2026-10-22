@@ -31,6 +31,16 @@ function lastRequestHeaders(): Headers {
 describe("snFetch (via getLoginParams)", () => {
   afterEach(() => fetchMock.mockReset());
 
+  it("bounds request lifetime to 30 seconds so a dead endpoint cannot hold the account indefinitely", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(validLoginParams));
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      await getLoginParams({ serverUrl: "https://example.test" }, "a@b.co", "challenge");
+      expect(timeout).toHaveBeenCalledWith(30_000);
+      expect(fetchMock.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
+    } finally { timeout.mockRestore(); }
+  });
+
   // Pins the reversal shipped in v0.5.1 for issue #6: an honest UA that
   // identifies the project passes Cloudflare cleanly, whereas the Chrome-UA
   // spoofing we did between v0.3.2 and v0.5.0 is now flagged as impersonation

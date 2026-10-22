@@ -1,24 +1,20 @@
 #!/usr/bin/env node
-import { deleteSession } from "../sn/session.js";
+import { deleteSession, resolveEmail } from "../sn/session.js";
+import { serverUrl } from "../sn/server-url.js";
+import { accountDirectory, privateDirectory, withAccountLock } from "../security/account-state.js";
 
 async function main(): Promise<void> {
-  const email = process.env.SN_EMAIL ?? process.argv[2];
-  if (!email) {
-    console.error(
-      "Usage: SN_EMAIL=<email> npm run logout   (or: npm run logout -- <email>)",
-    );
-    process.exit(2);
-  }
-  const removed = await deleteSession(email);
-  if (removed) {
-    console.error(`Removed keychain entry for ${email}.`);
-  } else {
-    console.error(`No keychain entry found for ${email}.`);
-    process.exit(1);
-  }
+  const server = serverUrl();
+  const email = process.env.SN_EMAIL ?? process.argv[2] ?? await resolveEmail(server);
+  const base = process.env.SN_STATE_DIR;
+  if (!base) throw new Error("Use bin/standardnotes-mcp logout so SN_STATE_DIR is configured");
+  const dir = accountDirectory(base, server, email);
+  await privateDirectory(base);
+  const removed = await withAccountLock(dir, () => deleteSession(email));
+  if (!removed) throw new Error("No login session found in the keychain");
+  process.stdout.write("Login session removed. Encrypted recovery history and its separate key were preserved.\n");
 }
-
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+main().catch((err: unknown) => {
+  process.stderr.write(`${err instanceof Error ? err.message : "Logout failed"}\n`);
+  process.exitCode = 1;
 });

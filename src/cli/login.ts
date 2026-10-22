@@ -2,7 +2,8 @@
 import readline from "node:readline";
 import { logger } from "../security/logger.js";
 import { createClientFromLogin } from "../sn/client.js";
-import { installDesktop, resolvePaths } from "./install.js";
+import { accountDirectory, privateDirectory, withAccountLock } from "../security/account-state.js";
+import { serverUrl as configuredServerUrl } from "../sn/server-url.js";
 
 const CTRL_C = "";
 const DEL = "";
@@ -70,8 +71,7 @@ function prompt(question: string, silent = false): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const serverUrl =
-    process.env.SN_SERVER_URL ?? "https://api.standardnotes.com";
+  const serverUrl = configuredServerUrl();
   const envEmail = process.env.SN_EMAIL;
   const email = envEmail ?? (await prompt("Email: "));
   if (!email) throw new Error("email is required");
@@ -80,48 +80,21 @@ async function main(): Promise<void> {
   if (!password) throw new Error("password is required");
 
   try {
-    await createClientFromLogin(
-      { serverUrl, email },
-      password,
-      async () => prompt("Two-factor code (6 digits): "),
-    );
+    const base = process.env.SN_STATE_DIR;
+    if (!base) throw new Error("Use bin/standardnotes-mcp login so SN_STATE_DIR is configured");
+    const dir = accountDirectory(base, serverUrl, email);
+    await privateDirectory(base);
+    const stats = await withAccountLock(dir, async () => {
+      const client = await createClientFromLogin(
+        { serverUrl, email }, password,
+        async () => prompt("Two-factor code (6 digits): "),
+      );
+      return client.stats();
+    });
     password = "";
-    logger.info("Login OK, session stored in keychain", { email, serverUrl });
-    process.stdout.write("Login successful. Session saved in OS keychain.\n");
+    process.stdout.write(`Login successful for ${email} at ${serverUrl}. ${stats.notes.total} notes, ${stats.tags} tags. Session saved in OS keychain.\n`);
+    process.stdout.write("Check the account and note count against the official app before writing. Cloud/app compatibility is not yet verified by this login.\n");
 
-    if (process.platform === "darwin" || process.platform === "win32") {
-      const ans = (
-        await prompt("Wire this server into Claude Desktop now? [Y/n]: ")
-      ).toLowerCase();
-      if (ans === "" || ans === "y" || ans === "yes") {
-        try {
-          const { configPath, backup } = await installDesktop({
-            email,
-            paths: resolvePaths(),
-          });
-          process.stdout.write(
-            `Claude Desktop config updated at ${configPath}\n`,
-          );
-          if (backup) {
-            process.stdout.write(`Previous config backed up to ${backup}\n`);
-          }
-          process.stdout.write(
-            "Quit Claude Desktop fully and relaunch to pick up the change.\n",
-          );
-        } catch (err) {
-          process.stdout.write(
-            `Desktop install skipped: ${err instanceof Error ? err.message : String(err)}\n`,
-          );
-          process.stdout.write(
-            "You can retry later with `mcp-standardnotes-install`.\n",
-          );
-        }
-      } else {
-        process.stdout.write(
-          "Skipped. Run `mcp-standardnotes-install` when you're ready.\n",
-        );
-      }
-    }
   } catch (err) {
     password = "";
     const causes: string[] = [];

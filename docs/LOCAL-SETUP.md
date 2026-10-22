@@ -1,0 +1,88 @@
+# Shared local Standard Notes MCP
+
+Local fork of lozit/mcp-standardnotes pinned to upstream `749d4662ca1c4c0183e6086cf1a43f681458ce25` (MIT). No public fork, npm publication, or Standard Notes app changes.
+
+## Privacy and access
+
+- The default endpoint is the official service, `https://api.standardnotes.com`.
+- All unprotected notes are in scope. Protected notes are masked/refused; edit-locked notes remain readable but cannot be changed or retagged.
+- Standard Notes sync uses its protocol 004 encryption. Keys/sessions live in the OS keychain. Local MCP uses process pipes, not a listening HTTP service.
+- Cloud agents send retrieved note plaintext to their model provider. TLS protects transit, not against that provider. Encrypting content so the provider cannot read it also prevents conventional model inference. Local inference avoids that disclosure (agent logs and remote control channels still matter).
+- Recovery records, including exact before/after previews, are encrypted with a separate 256-bit key in the OS keychain. Files are 0600; account directories 0700. They contain sensitive history once decrypted. No plaintext vault mirror or index is written.
+- Losing the recovery key makes local records unreadable. Logout removes the login session, not the recovery key. These records are NOT a substitute for a separate full vault backup. No retention/deletion automation is enabled.
+- No telemetry added; connector traffic goes to the configured Standard Notes service. Model traffic is the agent client's responsibility.
+
+## Installation and login
+
+Requires Node >=22, a working OS Secret Service/Keychain/Credential Vault, and the built pinned dependencies. Do not automatically run an unpinned npx package.
+
+Local checkout: `~/code/standardnotes-mcp`. Launcher: `bin/standardnotes-mcp`. Build/testing uses `bash tests/vm/run.sh` in a native Incus Ubuntu 26.04 VM; never run the real connector/installer test suite on the desktop as a test. Shared lifecycle: `~/code/dotfiles/lib/incus-vm.sh`.
+
+Set `SN_STATE_DIR` to a private absolute path on your data volume, or `DATA_DIR`. The launcher can read the current machine's `~/code/dotfiles/machines/<hostname>.env`; for example `DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`. No password or email belongs in MCP JSON.
+
+Sign in from your own interactive desktop terminal:
+
+```bash
+~/code/standardnotes-mcp/bin/standardnotes-mcp login
+```
+
+The password prompt is masked; 2FA is prompted if needed. Check the displayed account, service and note count against the official app. Never paste credentials or decrypted backups into an agent conversation.
+
+If you have one saved account, clients discover its email in the keychain. Multiple accounts require `SN_EMAIL` locally. Login never edits client configuration.
+
+## One entry for compatible clients
+
+```json
+{
+  "mcpServers": {
+    "standardnotes": {
+      "command": "/path/to/standardnotes-mcp/bin/standardnotes-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+For this machine, dotfiles `agents/configure.py` manages the same entry for Pi/Paseo's Pi agents and Claude Code when the launcher exists. Custom/disabled entries are preserved. Other MCP clients use the equivalent entry in their own supported configuration format. Each client starts a stdio process; account-wide filesystem locking serializes calls and fresh clients read keychain token rotation. Overlapping calls fail busy instead of racing; retry read/preparation later. A single installation does not mean all clients share one process.
+
+## Tools and writes
+
+Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_stats`, `tags_list`, `tags_get`. Reads of an individual item include an opaque revision paired with that exact ciphertext snapshot.
+
+1. Agent calls `writes_prepare` with one change. Available kinds: `note_create`, `note_update` (replace body, append, rename), `note_trash`, `note_restore`, `tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Existing-item changes require the read revision. Body writes support plain-text/Markdown only; structured-note body conversion is deliberately unavailable. Body edits refresh the derived plain preview and remove stale HTML previews; renames/trash preserve them.
+2. Review the full before/after preview, then approve in your interactive terminal using the operation UUID returned by the tool:
+
+   ```bash
+   ~/code/standardnotes-mcp/bin/standardnotes-mcp approve OPERATION_UUID
+   ```
+
+   Type the exact requested confirmation. There is no MCP approval tool, no `--yes`, and piped input is refused. Previews expire after one hour. This gate is not a sandbox against an agent that already has unrestricted shell/PTY and keychain access; use OS isolation/client permissions for that threat.
+3. Agent calls `writes_commit` with the saved operation UUID. Recovery records are durable before transmission; conflicts fail closed. The server reads the result back before confirming it.
+4. After an uncertain outcome, inspect `writes_status`. Retry ONLY the same operation UUID to reconcile. Previously attempted operations never resend; they can confirm an exact applied ciphertext or fail closed. Do not create a replacement operation blindly.
+5. `writes_undo_prepare` stages recovery of a confirmed operation only if the item still matches what it wrote. Approve and commit the new preview separately. New-note undo uses Trash; tag creation cannot be undone through MCP.
+
+There is no permanent deletion or tag deletion tool. Tags have no reversible trash in Standard Notes, so remove obsolete tags manually in the official app. No bulk cleanup, cross-format conversion, tag hierarchy changes, or scheduling is exposed by the safe interface.
+
+## Crash recovery and undo installation
+
+After a killed process, stop ALL connector clients, then:
+
+```bash
+~/code/standardnotes-mcp/bin/standardnotes-mcp unlock --clients-stopped
+```
+
+Only after an incomplete lock error, and only with all clients stopped:
+
+```bash
+~/code/standardnotes-mcp/bin/standardnotes-mcp unlock --clients-stopped --incomplete-lock
+```
+
+Live PID locks are refused. No age-based lock stealing is used. Operation ciphertext is preserved.
+
+To disconnect: disable/remove the `standardnotes` MCP entry in clients and remove/disable its dotfiles source registration (otherwise reconfiguration adds it again), then run `bin/standardnotes-mcp logout` with the same account selection. Do not delete recovery keychain entries or state files unless you explicitly intend to destroy that recovery history. Nothing is installed as a service.
+
+## Acceptance limits
+
+Synthetic HTTP tests are not proof of current official-cloud acceptance, rate limits, or official-editor compatibility. Before real writes: keep an encrypted full backup, rehearse on a throwaway official-cloud account, and open created/edited/trashed/restored notes in the official app. Compare counts and metadata, including another device's concurrent edits. No account creation or production note access is automated.
+
+The shared lock covers our MCP clients, not the official app. Server timestamp compare-and-swap detects ordinary concurrent edits; the server has no cross-item transaction for a tag write plus a note protection check. A note can become protected in another client between the final check and a separate tag write. Ordinary cloud API processing inherently cannot provide a cryptographic privacy boundary from the model provider.

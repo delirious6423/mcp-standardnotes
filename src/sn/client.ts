@@ -2,6 +2,8 @@ import { logger } from "../security/logger.js";
 import * as http from "./http.js";
 import {
   decryptItemsKey,
+  decryptItemContent,
+  replaceItemContent,
   decryptNote,
   decryptTag,
   deriveRootKey,
@@ -9,6 +11,7 @@ import {
   encryptTag,
   generateItemsKeyRaw,
   normalizeSuperText,
+  noteAccess,
   type DecryptedItemsKey,
   type DecryptedNote,
   type DecryptedTag,
@@ -33,9 +36,45 @@ import type {
   TagSummary,
   VaultStats,
 } from "./types.js";
-import { fromHex, toHex } from "./crypto.js";
+import { fromHex, toHex, sha256Hex } from "./crypto.js";
+
+export type SafeChange =
+  | { kind: "note_create"; title: string; text: string; noteType?: "plain-text" | "markdown" }
+  | { kind: "note_update"; uuid: string; revision: string; title?: string; text?: string; append?: string }
+  | { kind: "note_trash" | "note_restore"; uuid: string; revision: string }
+  | { kind: "tag_create"; title: string }
+  | { kind: "tag_update"; uuid: string; revision: string; title: string }
+  | { kind: "tag_attach" | "tag_detach"; uuid: string; revision: string; noteUuid: string }
+  | { kind: "recovery"; uuid: string; revision: string };
+
+export interface PreparedChange {
+  change: SafeChange;
+  before: http.RawItem | null;
+  after: http.RawItem;
+  preview: unknown;
+}
+
+/** Revision includes ciphertext so even same-timestamp remote edits invalidate it. */
+export function itemRevision(raw: http.RawItem): Promise<string> {
+  return sha256Hex(JSON.stringify([
+    raw.content, raw.enc_item_key, raw.items_key_id ?? null, raw.updated_at_timestamp,
+  ]));
+}
+
+function sameCiphertext(a: http.RawItem, b: http.RawItem): boolean {
+  return a.uuid === b.uuid && a.content_type === b.content_type &&
+    a.deleted === b.deleted && a.content === b.content &&
+    a.enc_item_key === b.enc_item_key && a.items_key_id === b.items_key_id;
+}
 
 export interface SnClient {
+  prepareChange(change: SafeChange): Promise<PreparedChange>;
+  commitChange(plan: PreparedChange, options?: { reconcileOnly?: boolean }): Promise<void>;
+  getRevision(uuid: string): Promise<string>;
+  getNoteWithRevision(uuid: string): Promise<(Note & { revision: string }) | null>;
+  getTagWithRevision(uuid: string): Promise<(Tag & { revision: string }) | null>;
+  getRawItem(uuid: string): Promise<http.RawItem | null>;
+  prepareRecovery(plan: PreparedChange): Promise<PreparedChange>;
   listNotes(opts: {
     limit: number;
     offset: number;
@@ -287,6 +326,7 @@ async function callSync(
     if (
       !(err instanceof http.SnApiError) ||
       err.status !== 401 ||
+      (params.items?.length ?? 0) > 0 ||
       !state.refreshToken
     ) {
       throw err;
@@ -315,7 +355,15 @@ async function callSync(
   }
 }
 
-async function fullSync(state: ClientState): Promise<void> {
+async function fullSync(state: ClientState, reset = false): Promise<void> {
+  if (reset) {
+    state.syncToken = null;
+    state.encryptedItemsRaw.clear();
+    state.notesCache.clear();
+    state.tagsCache.clear();
+    state.itemsKeys.clear();
+    state.defaultItemsKeyUuid = null;
+  }
   // Reset the failure counters at the top so a fix upstream (e.g. an
   // items_key that arrives on a later page) doesn't leave stale entries.
   state.decryptFailedNotes.clear();
@@ -377,6 +425,7 @@ async function fullSync(state: ClientState): Promise<void> {
       const note = await decryptNote(item, itemsKeyBytesByUuid);
       state.notesCache.set(note.uuid, note);
     } catch (err) {
+      state.notesCache.delete(item.uuid);
       state.decryptFailedNotes.add(item.uuid);
       logger.warn(`Failed to decrypt note ${item.uuid}`, {
         message: err instanceof Error ? err.message : String(err),
@@ -494,6 +543,9 @@ function buildClient(state: ClientState): SnClient {
   };
 
   const pushItems = async (items: unknown[]): Promise<http.SyncResponse> => {
+    if (items.some((item) => (item as { deleted?: unknown })?.deleted === true)) {
+      throw new Error("Permanent deletion is disabled");
+    }
     const res = await callSync(state, {
       syncToken: state.syncToken ?? undefined,
       items,
@@ -515,7 +567,6 @@ function buildClient(state: ClientState): SnClient {
       trashed: boolean;
       noteType: NoteType;
     },
-    attempt: number,
   ): Promise<http.RawItem> => {
     const raw = state.encryptedItemsRaw.get(uuid);
     if (!raw) throw new Error(`Note ${uuid} has no encrypted record`);
@@ -554,15 +605,8 @@ function buildClient(state: ClientState): SnClient {
       type?: string;
       server_item?: http.RawItem;
     };
-    if (cc.type === "sync_conflict" && cc.server_item && attempt < 1) {
-      logger.info(`sync_conflict on note ${uuid} — refreshing and retrying`);
-      state.encryptedItemsRaw.set(uuid, cc.server_item);
-      return submitNoteUpdate(uuid, merged, attempt + 1);
-    }
     throw new Error(
-      `Conflict on note ${uuid} (type=${cc.type ?? "unknown"}, attempts=${
-        attempt + 1
-      }). Run the sync tool and retry.`,
+      `Conflict on note ${uuid} (type=${cc.type ?? "unknown"}). Reconcile before retry; no automatic retry.`,
     );
   };
 
@@ -673,7 +717,251 @@ function buildClient(state: ClientState): SnClient {
     }
   };
 
+  const contentKeys = () => new Map(
+    [...state.itemsKeys].map(([uuid, key]) => [uuid, key.itemsKey]),
+  );
+  const writableNote = async (uuid: string): Promise<void> => {
+    const raw = state.encryptedItemsRaw.get(uuid);
+    if (!raw || raw.deleted || raw.content_type !== "Note") {
+      throw new Error(`Note ${uuid} not found`);
+    }
+    const content = await decryptItemContent(raw, contentKeys());
+    const access = noteAccess(content);
+    if (access.protected || access.locked) {
+      throw new Error(`Note ${uuid} is protected or locked`);
+    }
+  };
+  const objectMap = (value: unknown): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Malformed content metadata; refusing to replace it");
+    }
+    return value as Record<string, unknown>;
+  };
+
+  const writableTagTargets = async (before: http.RawItem, after: http.RawItem): Promise<void> => {
+    const oldContent = await decryptItemContent(before, contentKeys());
+    const newContent = await decryptItemContent(after, contentKeys());
+    const noteTargets = (value: unknown): Set<string> => {
+      if (value !== undefined && !Array.isArray(value)) throw new Error("Malformed tag references");
+      return new Set((Array.isArray(value) ? value : []).flatMap((ref: unknown) => {
+        if (!ref || typeof ref !== "object") return [];
+        const r = ref as Record<string, unknown>;
+        return r.content_type === "Note" && typeof r.uuid === "string" ? [r.uuid] : [];
+      }));
+    };
+    const oldTargets = noteTargets(oldContent.references);
+    const newTargets = noteTargets(newContent.references);
+    for (const uuid of new Set([...oldTargets, ...newTargets])) {
+      if (oldTargets.has(uuid) !== newTargets.has(uuid)) await writableNote(uuid);
+    }
+  };
+
+  const reviewPreview = async (kind: SafeChange["kind"], before: http.RawItem | null, after: http.RawItem) => ({
+    kind,
+    uuid: after.uuid,
+    before: before ? await decryptItemContent(before, contentKeys()) : null,
+    after: await decryptItemContent(after, contentKeys()),
+  });
+
   return {
+    async getNoteWithRevision(uuid) {
+      await fullSync(state);
+      const raw = state.encryptedItemsRaw.get(uuid);
+      if (!raw || raw.deleted || raw.content_type !== "Note") return null;
+      const note = toFullNote(await decryptNote(raw, contentKeys()), state.tagsCache);
+      return { ...note, revision: await itemRevision(raw) };
+    },
+
+    async getTagWithRevision(uuid) {
+      await fullSync(state);
+      const raw = state.encryptedItemsRaw.get(uuid);
+      if (!raw || raw.deleted || raw.content_type !== "Tag") return null;
+      const tag = toFullTag(await decryptTag(raw, contentKeys()));
+      return { ...tag, revision: await itemRevision(raw) };
+    },
+
+    async getRevision(uuid) {
+      await fullSync(state);
+      const raw = state.encryptedItemsRaw.get(uuid);
+      if (!raw) throw new Error(`Item ${uuid} not found`);
+      return itemRevision(raw);
+    },
+
+    async getRawItem(uuid) {
+      await fullSync(state);
+      const raw = state.encryptedItemsRaw.get(uuid);
+      return raw ? { ...raw } : null;
+    },
+
+    async prepareRecovery(plan) {
+      await fullSync(state);
+      const current = state.encryptedItemsRaw.get(plan.after.uuid);
+      if (!current || !sameCiphertext(current, plan.after)) {
+        throw new Error("Recovery conflict: item no longer matches the applied plan");
+      }
+      if (current.content_type === "Note") await writableNote(current.uuid);
+      if (plan.change.kind === "tag_attach" || plan.change.kind === "tag_detach") {
+        await writableNote(plan.change.noteUuid);
+      }
+      if (!plan.before) {
+        if (current.content_type !== "Note") throw new Error("Tag creation cannot be undone safely");
+        return this.prepareChange({ kind: "note_trash", uuid: current.uuid, revision: await itemRevision(current) });
+      }
+      if (plan.before.deleted || plan.before.uuid !== current.uuid ||
+          plan.before.content_type !== current.content_type) throw new Error("Invalid recovery source");
+      const after = { ...current, content: plan.before.content, enc_item_key: plan.before.enc_item_key,
+        items_key_id: plan.before.items_key_id };
+      if (current.content_type === "Tag") await writableTagTargets(current, after);
+      return {
+        change: { kind: "recovery", uuid: current.uuid, revision: await itemRevision(current) },
+        before: { ...current },
+        after,
+        preview: await reviewPreview("recovery", current, after),
+      };
+    },
+
+    async prepareChange(change) {
+      if (change.kind === "recovery") throw new Error("Recovery is internal; use prepareRecovery");
+      await fullSync(state);
+      const now = new Date().toISOString();
+      const creating = change.kind === "note_create" || change.kind === "tag_create";
+      if (creating) {
+        const uuid = crypto.randomUUID();
+        const key = defaultItemsKey();
+        const note = change.kind === "note_create";
+        if (note && change.noteType !== undefined &&
+            change.noteType !== "plain-text" && change.noteType !== "markdown") {
+          throw new Error("Only plain-text and markdown note creation is supported");
+        }
+        if (change.kind === "note_create" && Buffer.byteLength(change.text, "utf8") > 10 * 1024 * 1024) {
+          throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
+        }
+        const encrypted = change.kind === "note_create"
+          ? await encryptNote({ uuid, title: change.title, text: change.text,
+              noteType: change.noteType ?? "plain-text" }, key)
+          : await encryptTag({ uuid, title: change.title, references: [] }, key);
+        const after: http.RawItem = { uuid, content_type: note ? "Note" : "Tag", ...encrypted,
+          created_at: now, updated_at: now, created_at_timestamp: 0,
+          updated_at_timestamp: 0, deleted: false };
+        return {
+          change: { ...change },
+          before: null,
+          after,
+          preview: await reviewPreview(change.kind, null, after),
+        };
+      }
+      // The union's create variants have returned above.
+      if (!("uuid" in change)) throw new Error("Invalid change");
+      const raw = state.encryptedItemsRaw.get(change.uuid);
+      const expectedType = change.kind.startsWith("note_") ? "Note" : "Tag";
+      if (!raw || raw.deleted || raw.content_type !== expectedType) {
+        throw new Error(`Item ${change.uuid} not found or has wrong type`);
+      }
+      if (await itemRevision(raw) !== change.revision) {
+        throw new Error("Stale revision; reconcile before retry");
+      }
+      if (expectedType === "Note") await writableNote(raw.uuid);
+      if (change.kind === "tag_attach" || change.kind === "tag_detach") {
+        await writableNote(change.noteUuid);
+      }
+      const content = await decryptItemContent(raw, contentKeys());
+      switch (change.kind) {
+        case "note_update": {
+          if (change.text !== undefined && change.append !== undefined) {
+            throw new Error("Specify text or append, not both");
+          }
+          if (change.text !== undefined || change.append !== undefined) {
+            const type = content.noteType ?? "plain-text";
+            const editor = content.editorIdentifier;
+            if ((type !== "plain-text" && type !== "markdown") ||
+                (editor !== undefined && editor !== "org.standardnotes.advanced-markdown-editor") ||
+                (content.text !== undefined && typeof content.text !== "string")) {
+              throw new Error("Body edits require a known plain-text or markdown note");
+            }
+            const nextText = change.text ?? ((content.text as string | undefined) ?? "") + change.append;
+            if (Buffer.byteLength(nextText, "utf8") > 10 * 1024 * 1024) {
+              throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
+            }
+            content.text = nextText;
+            content.preview_plain = nextText.slice(0, 160);
+            // These are known text derivatives, not opaque application metadata.
+            delete content.preview_html;
+          }
+          if (change.title !== undefined) content.title = change.title;
+          break;
+        }
+        case "note_trash": content.trashed = true; break;
+        case "note_restore": content.trashed = false; break;
+        case "tag_update": content.title = change.title; break;
+        case "tag_attach":
+        case "tag_detach": {
+          if (content.references !== undefined && !Array.isArray(content.references)) {
+            throw new Error("Malformed tag references");
+          }
+          const refs = (content.references ?? []) as unknown[];
+          const matches = (ref: unknown) => ref !== null && typeof ref === "object" &&
+            (ref as Record<string, unknown>).uuid === change.noteUuid &&
+            (ref as Record<string, unknown>).content_type === "Note";
+          content.references = change.kind === "tag_detach"
+            ? refs.filter((ref) => !matches(ref))
+            : refs.some(matches) ? refs : [...refs, { uuid: change.noteUuid, content_type: "Note" }];
+          break;
+        }
+        default: throw new Error("Unsupported change");
+      }
+      const appData = content.appData === undefined ? {} : objectMap(content.appData);
+      const domain = appData["org.standardnotes.sn"] === undefined
+        ? {} : objectMap(appData["org.standardnotes.sn"]);
+      content.appData = { ...appData, "org.standardnotes.sn": { ...domain, client_updated_at: now } };
+      const after = { ...raw, content: await replaceItemContent(raw, content, contentKeys()), updated_at: now };
+      return {
+        change: { ...change },
+        before: { ...raw },
+        after,
+        preview: await reviewPreview(change.kind, raw, after),
+      };
+    },
+
+    async commitChange(plan, options) {
+      const { before, after } = plan;
+      if (after.deleted !== false || !["Note", "Tag"].includes(after.content_type) ||
+          !after.content.startsWith("004:") || !after.enc_item_key.startsWith("004:") ||
+          (before && (before.uuid !== after.uuid || before.content_type !== after.content_type || before.deleted))) {
+        throw new Error("Invalid prepared change; permanent deletion is disabled");
+      }
+      await fullSync(state);
+      const current = state.encryptedItemsRaw.get(after.uuid);
+      if (current && sameCiphertext(current, after)) return;
+      if (options?.reconcileOnly) {
+        throw new Error("Write not confirmed; reconciliation only, no write sent");
+      }
+      if (before ? !current || !sameCiphertext(current, before) ||
+          await itemRevision(current) !== await itemRevision(before) : current !== undefined) {
+        throw new Error("Conflict: expected item changed, disappeared, or UUID collided; reconcile before retry");
+      }
+      if (before?.content_type === "Note") await writableNote(before.uuid);
+      if (plan.change.kind === "tag_attach" || plan.change.kind === "tag_detach") {
+        await writableNote(plan.change.noteUuid);
+      }
+      // Recovery may restore a tag's old references. Check all changed Note targets
+      // from ciphertext rather than trusting optional presentation metadata.
+      if (before?.content_type === "Tag") await writableTagTargets(before, after);
+      // Authenticate both ciphertext fields before transmitting even a restored plan.
+      await decryptItemContent(after, contentKeys());
+      try {
+        const res = await pushItems([after]);
+        if (res.conflicts.length > 0) throw new Error("Conflict; no automatic retry");
+        const saved = res.saved_items.find((item) => item.uuid === after.uuid);
+        if (!saved || !sameCiphertext(saved, after)) throw new Error("Saved item identity not confirmed");
+        // Fetch from a null token, not from our just-written local cache.
+        await fullSync(state, true);
+        const readback = state.encryptedItemsRaw.get(after.uuid);
+        if (!readback || !sameCiphertext(readback, after)) throw new Error("Readback identity not confirmed");
+      } catch {
+        throw new Error("Write outcome uncertain or conflicted; reconcile before retry. No automatic retry.");
+      }
+    },
+
     async listNotes({ limit, offset, includeTrashed, tag, includeDescendants }) {
       await ensureFresh(state, cacheTtlMs(), () => fullSync(state));
       let allowedNoteUuids: Set<string> | null = null;
@@ -764,7 +1052,7 @@ function buildClient(state: ClientState): SnClient {
       const q = query.toLowerCase();
       const hits: DecryptedNote[] = [];
       for (const n of state.notesCache.values()) {
-        if (n.trashed) continue;
+        if (n.trashed || n.protected) continue;
         if (n.title.toLowerCase().includes(q) || n.text.toLowerCase().includes(q)) {
           hits.push(n);
           if (hits.length >= limit * 4) break;
@@ -957,7 +1245,7 @@ function buildClient(state: ClientState): SnClient {
           trashed: existing.trashed,
           noteType: nextType,
         };
-        const saved = await submitNoteUpdate(uuid, merged, 0);
+        const saved = await submitNoteUpdate(uuid, merged);
         state.notesCache.set(uuid, {
           ...existing,
           ...merged,
@@ -978,20 +1266,8 @@ function buildClient(state: ClientState): SnClient {
       await ensureFresh(state, 0, () => fullSync(state));
       const raw = state.encryptedItemsRaw.get(uuid);
       if (!raw) throw new Error(`Note ${uuid} not found`);
-      if (permanent) {
-        await pushItems([
-          {
-            uuid,
-            content_type: "Note",
-            deleted: true,
-            content: "",
-            enc_item_key: "",
-            updated_at_timestamp: raw.updated_at_timestamp,
-          },
-        ]);
-        state.notesCache.delete(uuid);
-        state.encryptedItemsRaw.delete(uuid);
-      } else {
+      if (permanent) throw new Error("Permanent deletion is disabled");
+      {
         const existing = state.notesCache.get(uuid);
         if (!existing) throw new Error(`Note ${uuid} not found in cache`);
         const merged = { ...existing, trashed: true };
@@ -1112,22 +1388,8 @@ function buildClient(state: ClientState): SnClient {
       });
     },
 
-    async deleteTag(uuid) {
-      await ensureFresh(state, 0, () => fullSync(state));
-      const raw = state.encryptedItemsRaw.get(uuid);
-      if (!raw) throw new Error(`Tag ${uuid} not found`);
-      await pushItems([
-        {
-          uuid,
-          content_type: "Tag",
-          deleted: true,
-          content: "",
-          enc_item_key: "",
-          updated_at_timestamp: raw.updated_at_timestamp,
-        },
-      ]);
-      state.tagsCache.delete(uuid);
-      state.encryptedItemsRaw.delete(uuid);
+    async deleteTag() {
+      throw new Error("Permanent tag deletion is disabled");
     },
 
     async attachTag(noteUuid, tagUuid) {

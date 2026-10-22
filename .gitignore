@@ -1,3 +1,4 @@
+.serena/
 node_modules/
 dist/
 .env

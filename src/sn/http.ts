@@ -181,6 +181,7 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
   }
   const finalInit = {
     ...init,
+    signal: init.signal ?? AbortSignal.timeout(30_000),
     headers,
     dispatcher: getDispatcher(),
   };

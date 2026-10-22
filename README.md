@@ -4,6 +4,8 @@
 
 # mcp-standardnotes
 
+> **Local safety fork:** setup, supported safe tools, privacy, approval/recovery and test limits are in [docs/LOCAL-SETUP.md](docs/LOCAL-SETUP.md). The upstream feature/install descriptions below are historical and do not describe this fork's exposed write interface. Do not install the upstream npm package to obtain this fork.
+
 [![CI](https://github.com/lozit/mcp-standardnotes/actions/workflows/ci.yml/badge.svg)](https://github.com/lozit/mcp-standardnotes/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node: ≥20](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](#requirements)

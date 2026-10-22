@@ -272,6 +272,25 @@ export interface DecryptedNote {
   created_at_timestamp: number;
 }
 
+/** Access flags are a trust boundary: malformed optional metadata is not permission. */
+export function noteAccess(content: Record<string, unknown>): { protected: boolean; locked: boolean } {
+  const metadata = (value: unknown): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Malformed note access metadata");
+    }
+    return value as Record<string, unknown>;
+  };
+  if (content.protected !== undefined && typeof content.protected !== "boolean") {
+    throw new Error("Malformed note protected flag");
+  }
+  const appData = content.appData === undefined ? {} : metadata(content.appData);
+  const domain = appData[SN_APP_DOMAIN] === undefined ? {} : metadata(appData[SN_APP_DOMAIN]);
+  if (domain.locked !== undefined && typeof domain.locked !== "boolean") {
+    throw new Error("Malformed note locked flag");
+  }
+  return { protected: content.protected === true, locked: domain.locked === true };
+}
+
 export async function decryptNote(
   item: EncryptedItemInput,
   itemsKeyByUuid: Map<string, Uint8Array>,
@@ -303,27 +322,48 @@ export async function decryptNote(
     appData?: Record<string, Record<string, unknown> | undefined>;
     noteType?: string;
   }>(contentJson, "note", item.uuid);
-  // SN stores the edit-lock under the appData domain "org.standardnotes.sn".
-  // Anything else (legacy keys, future extension points) we deliberately
-  // ignore here — the field is exposed only as a boolean to the tool layer.
-  const snAppData = content.appData?.["org.standardnotes.sn"];
-  const locked =
-    typeof snAppData === "object" &&
-    snAppData !== null &&
-    (snAppData as { locked?: unknown }).locked === true;
+  const access = noteAccess(content);
   return {
     uuid: item.uuid,
     title: content.title ?? "",
     text: content.text ?? "",
     trashed: content.trashed === true,
-    protected: content.protected === true,
-    locked,
+    ...access,
     noteType: (content.noteType as NoteType | undefined) ?? "plain-text",
     createdAt: item.created_at ?? "",
     updatedAt: item.updated_at ?? "",
     created_at_timestamp: item.created_at_timestamp ?? 0,
     updated_at_timestamp: item.updated_at_timestamp ?? 0,
   };
+}
+
+/** Decrypt the complete authenticated content map without projecting away metadata. */
+export async function decryptItemContent(
+  item: EncryptedItemInput,
+  keys: Map<string, Uint8Array>,
+): Promise<Record<string, unknown>> {
+  const key = item.items_key_id && keys.get(item.items_key_id);
+  if (!key) throw new Error(`Unknown items_key for ${item.uuid}`);
+  const itemKey = await fromHex(await decryptString(item.enc_item_key, key, item.uuid));
+  const parsed: unknown = parseDecryptedContent(
+    await decryptString(item.content, itemKey, item.uuid), "item", item.uuid,
+  );
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Item ${item.uuid} content must be an object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** Re-encrypt changed content while retaining the original wrapped item key. */
+export async function replaceItemContent(
+  item: EncryptedItemInput,
+  content: Record<string, unknown>,
+  keys: Map<string, Uint8Array>,
+): Promise<string> {
+  const key = item.items_key_id && keys.get(item.items_key_id);
+  if (!key) throw new Error(`Unknown items_key for ${item.uuid}`);
+  const itemKey = await fromHex(await decryptString(item.enc_item_key, key, item.uuid));
+  return encryptString(JSON.stringify(content), itemKey, { u: item.uuid, v: "004" });
 }
 
 export interface EncryptedNotePayload {
