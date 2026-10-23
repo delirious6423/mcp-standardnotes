@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
 # All process-launching, keychain and MCP tests run in a native throwaway VM.
 set -euo pipefail
+# Bash reads incrementally: keep one in-memory runner while agents edit the checkout.
+if [[ "${SN_VM_RUNNER_FROZEN:-0}" != 1 ]]; then
+  SN_VM_RUNNER_FROZEN=1
+  runner_source=$(<"${BASH_SOURCE[0]}")
+  bash -n <<< "$runner_source"
+  eval "$runner_source"
+  exit $?
+fi
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOTFILES="${DOTFILES:-$HOME/code/dotfiles}"
 # shellcheck source=/dev/null
 . "$DOTFILES/lib/incus-vm.sh"
 cleanup() {
   local rc=$? evidence
+  if [[ -n "$INCUS_VM" ]]; then
+    incus_vm_owned || { echo "Refusing evidence/cleanup for an unowned VM" >&2; exit 1; }
+  fi
+  if [[ -n "$INCUS_VM" && "${SN_GUI_TEST:-0}" == 1 ]]; then
+    evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM"
+    mkdir -p "$evidence"
+    timeout 20 "${INCUS[@]}" file pull -r "$INCUS_VM/tmp/sn-gui-test" "$evidence" >/dev/null 2>&1 || true
+  fi
   if [[ "$rc" != 0 && -n "$INCUS_VM" ]]; then
     evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM"
     mkdir -p "$evidence"
@@ -18,16 +34,17 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-incus_vm_start standardnotes 4096 2
+# Packages are installed once and kept in the warm VM snapshot.
+INCUS_PACKAGES="nodejs npm build-essential python3 pkg-config libsecret-1-dev dbus-x11 gnome-keyring --no-install-recommends"
+if [[ "${SN_GUI_TEST:-0}" == 1 ]]; then
+  incus_vm_start standardnotes-gui 8192 4 "$REPO/tests/vm/provision-gui.sh"
+else
+  incus_vm_start standardnotes 4096 2
+fi
 printf 'VM: '
 # shellcheck disable=SC2016
 timeout 20 "${GUEST[@]}" '. /etc/os-release; echo "$PRETTY_NAME"; mkdir -p ~/standardnotes-mcp'
-tar --exclude=.git --exclude=node_modules --exclude=dist -C "$REPO" -cf - . | timeout 30 "${GUEST[@]}" 'tar -xf - -C ~/standardnotes-mcp'
-CACHE="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/vm-apt.tar"
-if [[ -f "$CACHE" ]]; then
-  timeout 30 "${INCUS[@]}" exec "$INCUS_VM" -T -- tar -xf - -C /var/cache/apt/archives < "$CACHE"
-fi
-timeout 1200 "${GUEST[@]}" 'sudo apt-get -o DPkg::Lock::Timeout=120 update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends nodejs npm build-essential python3 pkg-config libsecret-1-dev dbus-x11 gnome-keyring'
+tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=target -C "$REPO" -cf - . | timeout 30 "${GUEST[@]}" 'tar -xf - -C ~/standardnotes-mcp'
 # npm 9 shipped by the guest OS crashes resolving the updated peer/override graph.
 # Registry-verified npm 11.21.1 supports guest Node 22.22.1; install only inside this VM.
 timeout 180 "${GUEST[@]}" 'sudo npm install --global --ignore-scripts --no-audit --no-fund npm@11.21.1 && npm --version'
@@ -43,11 +60,29 @@ timeout 120 "${GUEST[@]}" 'cd ~/standardnotes-mcp && npm audit --audit-level=hig
 if [ -f "$REPO/tests/mcp-e2e.mjs" ]; then
   timeout 120 "${GUEST[@]}" 'cd ~/standardnotes-mcp && dbus-run-session -- bash tests/vm/e2e.sh'
 fi
+if [[ "${SN_GUI_TEST:-0}" == 1 ]]; then
+  GUI_BINARY="${SN_GUI_BINARY:-$REPO/gui/target/debug/standardnotes-connection}"
+  [[ -f "$GUI_BINARY" ]] || { echo "Build the GPUI binary first" >&2; exit 1; }
+  timeout 30 "${INCUS[@]}" file push "$GUI_BINARY" "$INCUS_VM/home/tester/standardnotes-mcp/bin/standardnotes-connection"
+  timeout 10 "${INCUS[@]}" exec "$INCUS_VM" -T -- chown tester:tester /home/tester/standardnotes-mcp/bin/standardnotes-connection
+  DEBUG_SECONDS="${SN_GUI_DEBUG_SECONDS:-0}"
+  [[ "$DEBUG_SECONDS" =~ ^[0-9]+$ && "$DEBUG_SECONDS" -le 300 ]] || exit 1
+  timeout 450 "${GUEST[@]}" "cd ~/standardnotes-mcp && chmod +x bin/standardnotes-connection && SN_GUI_DEBUG_SECONDS=$DEBUG_SECONDS dbus-run-session -- bash tests/vm/gui.sh"
+fi
 # No guest accounts, keychain entries or operation state copied to host.
-mkdir -p "$REPO/dist"
-timeout 20 "${GUEST[@]}" 'tar -cf - -C ~/standardnotes-mcp/dist .' | tar -xf - -C "$REPO/dist"
 if [[ "${SN_INSTALL_ARTIFACTS:-0}" == 1 ]]; then
-  # Explicit local installation of VM-built dependencies; never run the app on the desktop as a test.
-  timeout 60 "${GUEST[@]}" 'tar -cf - -C ~/standardnotes-mcp node_modules' | tar -xf - -C "$REPO"
+  # Stage then swap so live MCP clients never see a half-written dist/. node_modules is replaced
+  # only on request: the lockfile is unchanged between GUI-era builds and clients run from it.
+  rm -rf "$REPO/dist.new"
+  mkdir -p "$REPO/dist.new"
+  timeout 20 "${GUEST[@]}" 'tar -cf - -C ~/standardnotes-mcp/dist .' | tar -xf - -C "$REPO/dist.new"
+  [[ -f "$REPO/dist.new/index.js" ]] || { echo 'Staged dist is incomplete; installed dist untouched' >&2; exit 1; }
+  rm -rf "$REPO/dist.old"
+  [[ ! -e "$REPO/dist" ]] || mv "$REPO/dist" "$REPO/dist.old"
+  mv "$REPO/dist.new" "$REPO/dist"
+  if [[ "${SN_INSTALL_NODE_MODULES:-0}" == 1 ]]; then
+    # Explicit local installation of VM-built dependencies; never run the app on the desktop as a test.
+    timeout 60 "${GUEST[@]}" 'tar -cf - -C ~/standardnotes-mcp node_modules' | tar -xf - -C "$REPO"
+  fi
 fi
 echo 'PASS: Ubuntu 26.04 native Incus VM checks (synthetic data; no cloud account)'
