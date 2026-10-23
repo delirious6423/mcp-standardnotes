@@ -1,5 +1,9 @@
 # MCP Standard Notes
 
+Local safety-fork rules are in `AGENTS.md`; the upstream features/commands below do not authorize legacy
+mutators or desktop/container-only integration tests. Run app/system tests in the approved native VM.
+Shared five-platform defaults and scoped real-host exceptions: `~/code/dotfiles/docs/cross-platform-testing.md`.
+
 MCP (Model Context Protocol) server that lets Claude interact with a Standard Notes account (read, create, edit, delete notes and tags) while preserving Standard Notes' end-to-end encryption (E2EE).
 
 <important if="working on encryption or authentication">

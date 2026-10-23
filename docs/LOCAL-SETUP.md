@@ -20,7 +20,7 @@ Local checkout: `~/code/standardnotes-mcp`. Launcher: `bin/standardnotes-mcp`. B
 
 Set `SN_STATE_DIR` to a private absolute path on your data volume, or `DATA_DIR`. The launcher can read the current machine's `~/code/dotfiles/machines/<hostname>.env`; for example `DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`. No password or email belongs in MCP JSON.
 
-Sign in from your own interactive desktop terminal:
+Sign in with the native Standard Notes Agent Connection app (`bin/standardnotes-connection`; also in your application menu once installed), or from your own interactive desktop terminal:
 
 ```bash
 ~/code/standardnotes-mcp/bin/standardnotes-mcp login
@@ -50,13 +50,9 @@ For this machine, dotfiles `agents/configure.py` manages the same entry for Pi/P
 Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_stats`, `tags_list`, `tags_get`. Reads of an individual item include an opaque revision paired with that exact ciphertext snapshot.
 
 1. Agent calls `writes_prepare` with one change. Available kinds: `note_create`, `note_update` (replace body, append, rename), `note_trash`, `note_restore`, `tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Existing-item changes require the read revision. Body writes support plain-text/Markdown only; structured-note body conversion is deliberately unavailable. Body edits refresh the derived plain preview and remove stale HTML previews; renames/trash preserve them.
-2. Review the full before/after preview, then approve in your interactive terminal using the operation UUID returned by the tool:
+2. `writes_commit` opens the native Standard Notes Agent Connection window for the saved operation. It shows the full before/after preview and the pinned account (local journal-account binding, not a cloud check); review it, tick the consent box, and Approve or Reject. Previews expire after one hour. There is no MCP approval tool. The terminal `bin/standardnotes-mcp approve OPERATION_UUID` flow is legacy/debug only, and the currently installed pre-GUI build uses it until the GUI-era install gate passes.
 
-   ```bash
-   ~/code/standardnotes-mcp/bin/standardnotes-mcp approve OPERATION_UUID
-   ```
-
-   Type the exact requested confirmation. There is no MCP approval tool, no `--yes`, and piped input is refused. Previews expire after one hour. This gate is not a sandbox against an agent that already has unrestricted shell/PTY and keychain access; use OS isolation/client permissions for that threat.
+   **Threat model:** human approval protects the MCP tool surface. It is not an OS sandbox and not proof of human presence: any process running as your user with shell and keychain access can invoke the private GUI bridge or the connector directly and approve its own write. Do not give untrusted agents unrestricted shell access under your account; stronger isolation (separate user/service, OS user-presence prompt) is a separate design that is not implemented.
 3. Agent calls `writes_commit` with the saved operation UUID. Recovery records are durable before transmission; conflicts fail closed. The server reads the result back before confirming it.
 4. After an uncertain outcome, inspect `writes_status`. Retry ONLY the same operation UUID to reconcile. Previously attempted operations never resend; they can confirm an exact applied ciphertext or fail closed. Do not create a replacement operation blindly.
 5. `writes_undo_prepare` stages recovery of a confirmed operation only if the item still matches what it wrote. Approve and commit the new preview separately. New-note undo uses Trash; tag creation cannot be undone through MCP.

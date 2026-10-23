@@ -1,12 +1,18 @@
 .serena/
 node_modules/
 dist/
+dist.new/
+dist.old/
+gui/target/
+bin/standardnotes-connection*
 .env
 .env.local
 *.log
 .DS_Store
 coverage/
 .vitest/
+__pycache__/
+*.pyc
 
 # Personal drafts / problem descriptions (never pushed)
 intakes/
