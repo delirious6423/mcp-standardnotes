@@ -31,6 +31,7 @@ import {
   xchachaDecrypt,
   xchachaEncrypt,
 } from "./crypto.js";
+import { decryptLegacyItem, type LegacyKeyring } from "./protocol003.js";
 import type { NoteType } from "./types.js";
 
 const SN_APP_DOMAIN = "org.standardnotes.sn";
@@ -225,10 +226,15 @@ export interface DecryptedItemsKey {
  *
  * Only K2 is kept and exposed as the items_key for note decryption.
  */
-export async function decryptItemsKey(
+export type ItemsKeyMaterial =
+  | DecryptedItemsKey
+  | { uuid: string; itemsKey: Uint8Array; dataAuthenticationKey: Uint8Array; version: "003" };
+
+/** Unwraps an items_key item; a legacy 003 key is returned for read-only use. */
+export async function decryptItemsKeyMaterial(
   item: EncryptedItemInput,
   rootKey: RootKey,
-): Promise<DecryptedItemsKey> {
+): Promise<ItemsKeyMaterial> {
   const wrappingKeyHex = await decryptString(
     item.enc_item_key,
     rootKey.masterKey,
@@ -240,7 +246,20 @@ export async function decryptItemsKey(
   const content = parseDecryptedContent<{
     version?: string;
     itemsKey?: string;
+    dataAuthenticationKey?: string;
   }>(contentJson, "items_key", item.uuid);
+  if (content.version === "003") {
+    if (!content.itemsKey || !/^[0-9a-f]{64}$/i.test(content.itemsKey) ||
+        !content.dataAuthenticationKey || !/^[0-9a-f]{64}$/i.test(content.dataAuthenticationKey)) {
+      throw new Error(`003 items_key content invalid for ${item.uuid}`);
+    }
+    return {
+      uuid: item.uuid,
+      itemsKey: await fromHex(content.itemsKey),
+      dataAuthenticationKey: await fromHex(content.dataAuthenticationKey),
+      version: "003",
+    };
+  }
   if (content.version && content.version !== "004") {
     throw new Error(`items_key has non-004 version: ${content.version}`);
   }
@@ -251,6 +270,54 @@ export async function decryptItemsKey(
   }
   const itemsKey = await fromHex(content.itemsKey);
   return { uuid: item.uuid, itemsKey, version: "004" };
+}
+
+/**
+ * Decrypts an items_key item (content_type = "SN|ItemsKey").
+ *
+ *   - enc_item_key : encrypted under rootKey.masterKey → yields hex of a
+ *                    "wrapping" key K1 used only to decrypt this item's `content`.
+ *   - content      : encrypted under K1 → JSON whose `itemsKey` field contains
+ *                    the ACTUAL items_key (K2) used to wrap other items.
+ *
+ * Only K2 is kept and exposed as the items_key for note decryption.
+ */
+export async function decryptItemsKey(
+  item: EncryptedItemInput,
+  rootKey: RootKey,
+): Promise<DecryptedItemsKey> {
+  const material = await decryptItemsKeyMaterial(item, rootKey);
+  if (material.version !== "004") {
+    throw new Error(`items_key has non-004 version: ${material.version}`);
+  }
+  return material;
+}
+
+/** Item keys by uuid, plus read-only legacy 003 keys when the account has any. */
+export type ItemKeys = Map<string, Uint8Array> & { legacy?: LegacyKeyring };
+
+/** Content JSON of a 004 or (read-only) 003 item; `kind` only names the item in errors. */
+async function itemContentJson(
+  item: EncryptedItemInput,
+  keys: ItemKeys,
+  kind: string,
+): Promise<{ json: string; legacyUuidMismatch: boolean }> {
+  if (item.content.startsWith("003:")) {
+    if (!keys.legacy) throw new Error(`${kind} ${item.uuid} is legacy 003 and no legacy keys are loaded`);
+    const r = decryptLegacyItem(item, keys.legacy);
+    return { json: r.contentJson, legacyUuidMismatch: r.uuidMismatch };
+  }
+  const keyId = item.items_key_id;
+  if (!keyId) {
+    throw new Error(`${kind} ${item.uuid} has no items_key_id`);
+  }
+  const itemsKey = keys.get(keyId);
+  if (!itemsKey) {
+    throw new Error(`Unknown items_key ${keyId} for ${kind.toLowerCase()} ${item.uuid}`);
+  }
+  const itemKeyHex = await decryptString(item.enc_item_key, itemsKey, item.uuid);
+  const perItemKey = await fromHex(itemKeyHex);
+  return { json: await decryptString(item.content, perItemKey, item.uuid), legacyUuidMismatch: false };
 }
 
 export interface DecryptedNote {
@@ -270,6 +337,8 @@ export interface DecryptedNote {
   noteType: NoteType;
   updated_at_timestamp: number;
   created_at_timestamp: number;
+  /** Legacy 003 note whose MAC-covered uuid differs from the server's; readable only by opt-in. */
+  legacyUuidMismatch?: true;
 }
 
 /** Access flags are a trust boundary: malformed optional metadata is not permission. */
@@ -293,27 +362,9 @@ export function noteAccess(content: Record<string, unknown>): { protected: boole
 
 export async function decryptNote(
   item: EncryptedItemInput,
-  itemsKeyByUuid: Map<string, Uint8Array>,
+  itemsKeyByUuid: ItemKeys,
 ): Promise<DecryptedNote> {
-  const keyId = item.items_key_id;
-  if (!keyId) {
-    throw new Error(`Note ${item.uuid} has no items_key_id`);
-  }
-  const itemsKey = itemsKeyByUuid.get(keyId);
-  if (!itemsKey) {
-    throw new Error(`Unknown items_key ${keyId} for note ${item.uuid}`);
-  }
-  const itemKeyHex = await decryptString(
-    item.enc_item_key,
-    itemsKey,
-    item.uuid,
-  );
-  const perItemKey = await fromHex(itemKeyHex);
-  const contentJson = await decryptString(
-    item.content,
-    perItemKey,
-    item.uuid,
-  );
+  const { json: contentJson, legacyUuidMismatch } = await itemContentJson(item, itemsKeyByUuid, "Note");
   const content = parseDecryptedContent<{
     title?: string;
     text?: string;
@@ -334,20 +385,17 @@ export async function decryptNote(
     updatedAt: item.updated_at ?? "",
     created_at_timestamp: item.created_at_timestamp ?? 0,
     updated_at_timestamp: item.updated_at_timestamp ?? 0,
+    ...(legacyUuidMismatch ? { legacyUuidMismatch: true as const } : {}),
   };
 }
 
 /** Decrypt the complete authenticated content map without projecting away metadata. */
 export async function decryptItemContent(
   item: EncryptedItemInput,
-  keys: Map<string, Uint8Array>,
+  keys: ItemKeys,
 ): Promise<Record<string, unknown>> {
-  const key = item.items_key_id && keys.get(item.items_key_id);
-  if (!key) throw new Error(`Unknown items_key for ${item.uuid}`);
-  const itemKey = await fromHex(await decryptString(item.enc_item_key, key, item.uuid));
-  const parsed: unknown = parseDecryptedContent(
-    await decryptString(item.content, itemKey, item.uuid), "item", item.uuid,
-  );
+  const { json } = await itemContentJson(item, keys, "Item");
+  const parsed: unknown = parseDecryptedContent(json, "item", item.uuid);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`Item ${item.uuid} content must be an object`);
   }
@@ -364,6 +412,37 @@ export async function replaceItemContent(
   if (!key) throw new Error(`Unknown items_key for ${item.uuid}`);
   const itemKey = await fromHex(await decryptString(item.enc_item_key, key, item.uuid));
   return encryptString(JSON.stringify(content), itemKey, { u: item.uuid, v: "004" });
+}
+
+/**
+ * Encrypted fields for an edited item. A 004 item keeps its wrapped item key; a
+ * legacy 003 item is rewritten as 004 under the current default items key. The
+ * caller's `keys` must be strict (no uuid-mismatch opt-in), so a mismatching
+ * legacy item can never be written back.
+ */
+export async function rewriteItemContent(
+  item: EncryptedItemInput,
+  content: Record<string, unknown>,
+  keys: ItemKeys,
+  defaultKey: { uuid: string; itemsKey: Uint8Array },
+): Promise<{ content: string; enc_item_key: string; items_key_id: string | null }> {
+  if (!item.content.startsWith("003:")) {
+    return {
+      content: await replaceItemContent(item, content, keys),
+      enc_item_key: item.enc_item_key,
+      items_key_id: item.items_key_id ?? null,
+    };
+  }
+  if (keys.legacy?.allowUuidMismatch) throw new Error("Legacy uuid mismatch must not be writable");
+  // Re-authenticate under strict rules; throws for a mismatching or unreadable item.
+  await itemContentJson(item, keys, "Item");
+  const perItemKey = await generateItemsKeyRaw();
+  const aad = { u: item.uuid, v: "004" };
+  return {
+    content: await encryptString(JSON.stringify(content), perItemKey, aad),
+    enc_item_key: await encryptString(await toHex(perItemKey), defaultKey.itemsKey, aad),
+    items_key_id: defaultKey.uuid,
+  };
 }
 
 export interface EncryptedNotePayload {
@@ -452,27 +531,9 @@ export interface DecryptedTag {
 
 export async function decryptTag(
   item: EncryptedItemInput,
-  itemsKeyByUuid: Map<string, Uint8Array>,
+  itemsKeyByUuid: ItemKeys,
 ): Promise<DecryptedTag> {
-  const keyId = item.items_key_id;
-  if (!keyId) {
-    throw new Error(`Tag ${item.uuid} has no items_key_id`);
-  }
-  const itemsKey = itemsKeyByUuid.get(keyId);
-  if (!itemsKey) {
-    throw new Error(`Unknown items_key ${keyId} for tag ${item.uuid}`);
-  }
-  const itemKeyHex = await decryptString(
-    item.enc_item_key,
-    itemsKey,
-    item.uuid,
-  );
-  const perItemKey = await fromHex(itemKeyHex);
-  const contentJson = await decryptString(
-    item.content,
-    perItemKey,
-    item.uuid,
-  );
+  const { json: contentJson } = await itemContentJson(item, itemsKeyByUuid, "Tag");
   const content = parseDecryptedContent<{
     title?: string;
     references?: Array<{

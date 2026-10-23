@@ -1,9 +1,9 @@
 import { logger } from "../security/logger.js";
 import * as http from "./http.js";
 import {
-  decryptItemsKey,
   decryptItemContent,
-  replaceItemContent,
+  decryptItemsKeyMaterial,
+  rewriteItemContent,
   decryptNote,
   decryptTag,
   deriveRootKey,
@@ -15,10 +15,12 @@ import {
   type DecryptedItemsKey,
   type DecryptedNote,
   type DecryptedTag,
+  type ItemKeys,
   type KeyParams004,
   type RootKey,
   type TagReference,
 } from "./protocol004.js";
+import type { LegacyKey } from "./protocol003.js";
 import { loadSession, saveSession, type StoredSession } from "./session.js";
 import { cacheTtlMs, ensureFresh } from "./cache.js";
 import {
@@ -139,6 +141,8 @@ interface ClientState {
   refreshToken: string;
   rootKey: RootKey;
   itemsKeys: Map<string, DecryptedItemsKey>;
+  /** Legacy 003 items keys, read-only; never eligible as the default key. */
+  legacyKeys: LegacyKey[];
   defaultItemsKeyUuid: string | null;
   notesCache: Map<string, DecryptedNote>;
   tagsCache: Map<string, DecryptedTag>;
@@ -227,6 +231,7 @@ export async function createClientFromLogin(
     refreshToken: loginRes.session.refresh_token,
     rootKey,
     itemsKeys: new Map(),
+    legacyKeys: [],
     defaultItemsKeyUuid: null,
     notesCache: new Map(),
     tagsCache: new Map(),
@@ -280,6 +285,7 @@ export async function createClientFromSession(
     refreshToken: stored.sessionPayload.refresh_token,
     rootKey,
     itemsKeys: new Map(),
+    legacyKeys: [],
     defaultItemsKeyUuid: null,
     notesCache: new Map(),
     tagsCache: new Map(),
@@ -355,6 +361,22 @@ async function callSync(
   }
 }
 
+/** Opt-in to reading (never writing) legacy notes whose embedded uuid differs from the server's. */
+function allowLegacyUuidMismatch(): boolean {
+  return process.env.SN_ALLOW_LEGACY_UUID_MISMATCH === "1";
+}
+
+/** Item keys for decrypting; legacy 003 keys ride along for read-only use. */
+function itemKeys(state: ClientState, allowUuidMismatch: boolean): ItemKeys {
+  const keys: ItemKeys = new Map(
+    [...state.itemsKeys].map(([uuid, key]) => [uuid, key.itemsKey]),
+  );
+  if (state.legacyKeys.length > 0) {
+    keys.legacy = { keys: state.legacyKeys, allowUuidMismatch };
+  }
+  return keys;
+}
+
 async function fullSync(state: ClientState, reset = false): Promise<void> {
   if (reset) {
     state.syncToken = null;
@@ -362,6 +384,7 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
     state.notesCache.clear();
     state.tagsCache.clear();
     state.itemsKeys.clear();
+    state.legacyKeys = [];
     state.defaultItemsKeyUuid = null;
   }
   // Reset the failure counters at the top so a fix upstream (e.g. an
@@ -379,6 +402,7 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
         state.notesCache.delete(item.uuid);
         state.tagsCache.delete(item.uuid);
         state.itemsKeys.delete(item.uuid);
+        state.legacyKeys = state.legacyKeys.filter((k) => k.uuid !== item.uuid);
         continue;
       }
       state.encryptedItemsRaw.set(item.uuid, item);
@@ -391,10 +415,19 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
 
   // First pass: decrypt items_keys
   let mostRecentTs = -Infinity;
+  state.legacyKeys = [];
   for (const item of state.encryptedItemsRaw.values()) {
     if (item.content_type !== "SN|ItemsKey") continue;
     try {
-      const k = await decryptItemsKey(item, state.rootKey);
+      const k = await decryptItemsKeyMaterial(item, state.rootKey);
+      if (k.version === "003") {
+        state.legacyKeys.push({
+          uuid: k.uuid,
+          ek: Buffer.from(k.itemsKey),
+          ak: Buffer.from(k.dataAuthenticationKey),
+        });
+        continue;
+      }
       state.itemsKeys.set(k.uuid, k);
       const ts = item.updated_at_timestamp ?? 0;
       if (ts >= mostRecentTs) {
@@ -413,10 +446,7 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
     );
   }
 
-  const itemsKeyBytesByUuid = new Map<string, Uint8Array>();
-  for (const [u, k] of state.itemsKeys.entries()) {
-    itemsKeyBytesByUuid.set(u, k.itemsKey);
-  }
+  const itemsKeyBytesByUuid = itemKeys(state, allowLegacyUuidMismatch());
 
   // Second pass: decrypt notes
   for (const item of state.encryptedItemsRaw.values()) {
@@ -453,6 +483,7 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
     notes: state.notesCache.size,
     tags: state.tagsCache.size,
     itemsKeys: state.itemsKeys.size,
+    legacyItemsKeys: state.legacyKeys.length,
     decryptFailedNotes: state.decryptFailedNotes.size,
     decryptFailedTags: state.decryptFailedTags.size,
   });
@@ -507,6 +538,7 @@ function toFullNote(
     locked: n.locked,
     tags: tagsForNote(n.uuid, tagsCache),
     noteType: n.noteType,
+    ...(n.legacyUuidMismatch ? { legacyUuidMismatch: true as const } : {}),
   };
 }
 
@@ -717,9 +749,9 @@ function buildClient(state: ClientState): SnClient {
     }
   };
 
-  const contentKeys = () => new Map(
-    [...state.itemsKeys].map(([uuid, key]) => [uuid, key.itemsKey]),
-  );
+  // Strict keys are for anything that may write; read-only views may opt in to mismatching legacy notes.
+  const contentKeys = () => itemKeys(state, false);
+  const readKeys = () => itemKeys(state, allowLegacyUuidMismatch());
   const writableNote = async (uuid: string): Promise<void> => {
     const raw = state.encryptedItemsRaw.get(uuid);
     if (!raw || raw.deleted || raw.content_type !== "Note") {
@@ -768,7 +800,7 @@ function buildClient(state: ClientState): SnClient {
       await fullSync(state);
       const raw = state.encryptedItemsRaw.get(uuid);
       if (!raw || raw.deleted || raw.content_type !== "Note") return null;
-      const note = toFullNote(await decryptNote(raw, contentKeys()), state.tagsCache);
+      const note = toFullNote(await decryptNote(raw, readKeys()), state.tagsCache);
       return { ...note, revision: await itemRevision(raw) };
     },
 
@@ -776,7 +808,7 @@ function buildClient(state: ClientState): SnClient {
       await fullSync(state);
       const raw = state.encryptedItemsRaw.get(uuid);
       if (!raw || raw.deleted || raw.content_type !== "Tag") return null;
-      const tag = toFullTag(await decryptTag(raw, contentKeys()));
+      const tag = toFullTag(await decryptTag(raw, readKeys()));
       return { ...tag, revision: await itemRevision(raw) };
     },
 
@@ -913,7 +945,11 @@ function buildClient(state: ClientState): SnClient {
       const domain = appData["org.standardnotes.sn"] === undefined
         ? {} : objectMap(appData["org.standardnotes.sn"]);
       content.appData = { ...appData, "org.standardnotes.sn": { ...domain, client_updated_at: now } };
-      const after = { ...raw, content: await replaceItemContent(raw, content, contentKeys()), updated_at: now };
+      const after = {
+        ...raw,
+        ...await rewriteItemContent(raw, content, contentKeys(), defaultItemsKey()),
+        updated_at: now,
+      };
       return {
         change: { ...change },
         before: { ...raw },

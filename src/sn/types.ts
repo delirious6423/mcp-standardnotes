@@ -37,6 +37,8 @@ export interface Note {
   trashed: boolean;
   protected: boolean;
   locked: boolean;
+  /** Legacy 003 note read by opt-in despite a uuid mismatch; read-only. */
+  legacyUuidMismatch?: true;
   tags: string[];
   noteType: NoteType;
 }

@@ -35,7 +35,7 @@ Every single cryptographic primitive:
 - Secure random bytes for nonces and per-item keys
 - Hex/base64 encoding helpers
 
-No AES, no ChaCha, no KDF, no HMAC, no signing is written by hand in this repo.
+No cipher, KDF, HMAC or signing primitive is written by hand in this repo (legacy 003 reads use Node's built-in `crypto`).
 
 ## One-paragraph walkthrough
 
@@ -72,3 +72,16 @@ form. Handling of both shapes lives in [`src/sn/tagHierarchy.ts`](../src/sn/tagH
 - Standard Notes [encryption whitepaper](https://standardnotes.com/help/security/encryption)
 - SNJS [specification](https://github.com/standardnotes/snjs/blob/main/packages/snjs/specification.md)
 - Source: [`src/sn/protocol004.ts`](../src/sn/protocol004.ts)
+
+## Legacy protocol 003 items
+
+Accounts upgraded from protocol 003 can still hold 003 notes and tags. They are encrypted under 003 items keys
+(AES-256-CBC, HMAC-SHA256 checked before decrypting) that sit in the vault wrapped under the 004 root key, so
+no password is needed. `src/sn/protocol003.ts` uses Node's built-in `crypto` for this; it never derives keys.
+
+- Legacy items are readable and editable. An edit rewrites the item as 004 under the current default 004 items key
+  and preserves the full decrypted content map. A 003 key can never become the default key.
+- The MAC covers the uuid written inside the ciphertext. By default it must equal the server's uuid, which stops a
+  server moving valid ciphertext onto another item. A few old items (2018 clients) do not match.
+  `SN_ALLOW_LEGACY_UUID_MISMATCH=1` makes them readable, flagged `legacyUuidMismatch`, and still never writable.
+- An optional 6th payload segment (account params) is not authenticated: it is ignored and never logged.
