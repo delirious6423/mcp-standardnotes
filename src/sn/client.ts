@@ -16,6 +16,7 @@ import {
   type RootKey,
   type TagReference,
 } from "./protocol004.js";
+import type { LegacyItemsKey } from "./protocol003.js";
 import { loadSession, saveSession, type StoredSession } from "./session.js";
 import { cacheTtlMs, ensureFresh } from "./cache.js";
 import {
@@ -100,6 +101,8 @@ interface ClientState {
   refreshToken: string;
   rootKey: RootKey;
   itemsKeys: Map<string, DecryptedItemsKey>;
+  // Read-only: never the default key, so every write is 004.
+  legacyItemsKeys: Map<string, LegacyItemsKey>;
   defaultItemsKeyUuid: string | null;
   notesCache: Map<string, DecryptedNote>;
   tagsCache: Map<string, DecryptedTag>;
@@ -188,6 +191,7 @@ export async function createClientFromLogin(
     refreshToken: loginRes.session.refresh_token,
     rootKey,
     itemsKeys: new Map(),
+    legacyItemsKeys: new Map(),
     defaultItemsKeyUuid: null,
     notesCache: new Map(),
     tagsCache: new Map(),
@@ -241,6 +245,7 @@ export async function createClientFromSession(
     refreshToken: stored.sessionPayload.refresh_token,
     rootKey,
     itemsKeys: new Map(),
+    legacyItemsKeys: new Map(),
     defaultItemsKeyUuid: null,
     notesCache: new Map(),
     tagsCache: new Map(),
@@ -331,6 +336,7 @@ async function fullSync(state: ClientState): Promise<void> {
         state.notesCache.delete(item.uuid);
         state.tagsCache.delete(item.uuid);
         state.itemsKeys.delete(item.uuid);
+        state.legacyItemsKeys.delete(item.uuid);
         continue;
       }
       state.encryptedItemsRaw.set(item.uuid, item);
@@ -347,6 +353,10 @@ async function fullSync(state: ClientState): Promise<void> {
     if (item.content_type !== "SN|ItemsKey") continue;
     try {
       const k = await decryptItemsKey(item, state.rootKey);
+      if (k.version === "003") {
+        state.legacyItemsKeys.set(k.uuid, k);
+        continue;
+      }
       state.itemsKeys.set(k.uuid, k);
       const ts = item.updated_at_timestamp ?? 0;
       if (ts >= mostRecentTs) {
@@ -369,12 +379,13 @@ async function fullSync(state: ClientState): Promise<void> {
   for (const [u, k] of state.itemsKeys.entries()) {
     itemsKeyBytesByUuid.set(u, k.itemsKey);
   }
+  const legacyKeys = [...state.legacyItemsKeys.values()];
 
   // Second pass: decrypt notes
   for (const item of state.encryptedItemsRaw.values()) {
     if (item.content_type !== "Note") continue;
     try {
-      const note = await decryptNote(item, itemsKeyBytesByUuid);
+      const note = await decryptNote(item, itemsKeyBytesByUuid, legacyKeys);
       state.notesCache.set(note.uuid, note);
     } catch (err) {
       state.decryptFailedNotes.add(item.uuid);
@@ -388,7 +399,7 @@ async function fullSync(state: ClientState): Promise<void> {
   for (const item of state.encryptedItemsRaw.values()) {
     if (item.content_type !== "Tag") continue;
     try {
-      const tag = await decryptTag(item, itemsKeyBytesByUuid);
+      const tag = await decryptTag(item, itemsKeyBytesByUuid, legacyKeys);
       state.tagsCache.set(tag.uuid, tag);
     } catch (err) {
       state.decryptFailedTags.add(item.uuid);
@@ -404,6 +415,7 @@ async function fullSync(state: ClientState): Promise<void> {
     notes: state.notesCache.size,
     tags: state.tagsCache.size,
     itemsKeys: state.itemsKeys.size,
+    legacyItemsKeys: state.legacyItemsKeys.size,
     decryptFailedNotes: state.decryptFailedNotes.size,
     decryptFailedTags: state.decryptFailedTags.size,
   });

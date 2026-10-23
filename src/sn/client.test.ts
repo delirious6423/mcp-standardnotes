@@ -30,9 +30,10 @@ vi.mock("./session.js", () => ({
   deleteSession: vi.fn(),
 }));
 
+import { createCipheriv, createHmac, randomBytes as nodeRandomBytes } from "node:crypto";
 import { SnApiError, type RawItem } from "./http.js";
 import { createClientFromLogin, createClientFromSession } from "./client.js";
-import { encryptString } from "./protocol004.js";
+import { decryptNote, encryptString } from "./protocol004.js";
 import { randomBytes, toHex } from "./crypto.js";
 
 describe("createClientFromSession bootstrap", () => {
@@ -240,5 +241,121 @@ describe("protected notes in read paths", () => {
     const stats = await (await clientWithProtectedNote()).stats();
     expect([stats.largest?.title, stats.oldest?.title, stats.newest?.title])
       .toEqual(["[Protected]", "[Protected]", "[Protected]"]);
+  });
+});
+
+describe("legacy 003 items in an account upgraded to 004", () => {
+  const KEY_004 = "11111111-1111-4111-8111-111111111111";
+  const KEY_003 = "55555555-5555-4555-8555-555555555555";
+  const NOTE = "22222222-2222-4222-8222-222222222222";
+  const TAG = "33333333-3333-4333-8333-333333333333";
+  const PROTECTED = "44444444-4444-4444-8444-444444444444";
+  const hex32 = () => nodeRandomBytes(32).toString("hex");
+
+  // Test-only 003 encoder written from the published format.
+  function enc003(plain: string, ek: string, ak: string, uuid: string): string {
+    const iv = nodeRandomBytes(16);
+    const c = createCipheriv("aes-256-cbc", Buffer.from(ek, "hex"), iv);
+    const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]).toString("base64");
+    const mac = createHmac("sha256", Buffer.from(ak, "hex")).update(`003:${uuid}:${iv.toString("hex")}:${ct}`).digest("hex");
+    return `003:${mac}:${uuid}:${iv.toString("hex")}:${ct}`;
+  }
+
+  function item003(uuid: string, contentType: string, content: object, legacy: { ek: string; ak: string }): RawItem {
+    const ek = hex32(), ak = hex32();
+    return {
+      uuid,
+      content_type: contentType,
+      content: enc003(JSON.stringify(content), ek, ak, uuid),
+      enc_item_key: enc003(ek + ak, legacy.ek, legacy.ak, uuid),
+      items_key_id: null,
+      created_at_timestamp: 1,
+      updated_at_timestamp: 1,
+    } as RawItem;
+  }
+
+  async function itemsKeyItem(uuid: string, masterKey: Uint8Array, body: object, ts: number): Promise<RawItem> {
+    const wrap = await randomBytes(32);
+    const aad = { u: uuid, v: "004", kp: { version: "004" } };
+    return {
+      uuid,
+      content_type: "SN|ItemsKey",
+      enc_item_key: await encryptString(await toHex(wrap), masterKey, aad),
+      content: await encryptString(JSON.stringify(body), wrap, aad),
+      items_key_id: null,
+      created_at_timestamp: ts,
+      updated_at_timestamp: ts,
+    } as RawItem;
+  }
+
+  afterEach(() => {
+    syncMock.mockReset();
+    loadSessionMock.mockReset();
+    saveSessionMock.mockReset();
+  });
+
+  async function setup() {
+    const masterKey = await randomBytes(32);
+    const itemsKey004 = await randomBytes(32);
+    const legacy = { ek: hex32(), ak: hex32() };
+    const server = new Map<string, RawItem>();
+    for (const i of [
+      await itemsKeyItem(KEY_004, masterKey, { version: "004", itemsKey: await toHex(itemsKey004) }, 5),
+      // Newer than the 004 key on purpose: a 003 key must never become the default.
+      await itemsKeyItem(KEY_003, masterKey, { version: "003", itemsKey: legacy.ek, dataAuthenticationKey: legacy.ak }, 9),
+      item003(NOTE, "Note", { title: "Old", text: "legacy body", references: [] }, legacy),
+      item003(TAG, "Tag", { title: "Archive", references: [{ uuid: NOTE, content_type: "Note" }] }, legacy),
+      { ...item003(PROTECTED, "Note", { title: "Codes", text: "legacy secret", references: [], protected: true }, legacy),
+        updated_at_timestamp: 7 },
+    ]) server.set(i.uuid, i);
+    const pushed: RawItem[] = [];
+    loadSessionMock.mockResolvedValue({
+      serverUrl: "https://example.test",
+      email: "a@b.co",
+      sessionPayload: { access_token: "tok", refresh_token: "ref" },
+      masterKeyHex: await toHex(masterKey),
+      keyParams: { version: "004", identifier: "a@b.co", pw_nonce: "n" },
+      syncToken: null,
+      savedAt: new Date().toISOString(),
+    });
+    saveSessionMock.mockResolvedValue(undefined);
+    syncMock.mockImplementation(async (_cfg: unknown, params: { items?: RawItem[] }) => {
+      const saved = (params.items ?? []).map((i) => ({ ...i, updated_at_timestamp: i.updated_at_timestamp + 1 }));
+      for (const i of saved) {
+        pushed.push(i);
+        server.set(i.uuid, i);
+      }
+      return { retrieved_items: [...server.values()], saved_items: saved, conflicts: [], sync_token: "t" };
+    });
+    const client = await createClientFromSession({ serverUrl: "https://example.test", email: "a@b.co" });
+    return { client, pushed, itemsKey004 };
+  }
+
+  it("reads 003 notes and tags without the account password", async () => {
+    const { client } = await setup();
+    expect(await client.getNote(NOTE)).toMatchObject({ title: "Old", text: "legacy body", tags: ["Archive"] });
+    expect((await client.listTags()).map((t) => t.title)).toEqual(["Archive"]);
+    expect((await client.stats()).decryptFailures).toEqual({ notes: 0, tags: 0 });
+  });
+
+  it("keeps newly readable protected 003 notes out of search and stats titles", async () => {
+    const { client } = await setup();
+    expect((await client.searchNotes("legacy", 10)).map((n) => n.uuid)).toEqual([NOTE]);
+    expect((await client.stats()).newest).toMatchObject({ uuid: PROTECTED, title: "[Protected]" });
+  });
+
+  it("re-encrypts an edited 003 note as 004 under the 004 items key", async () => {
+    const { client, pushed, itemsKey004 } = await setup();
+    await client.updateNote({ uuid: NOTE, text: "edited" });
+    const stored = pushed.find((i) => i.uuid === NOTE)!;
+    expect(stored.content.startsWith("004:") && stored.enc_item_key.startsWith("004:")).toBe(true);
+    expect(stored.items_key_id).toBe(KEY_004);
+    expect(await decryptNote(stored, new Map([[KEY_004, itemsKey004]]))).toMatchObject({ title: "Old", text: "edited" });
+  });
+
+  it("never encrypts new items under a 003 key", async () => {
+    const { client, pushed } = await setup();
+    await client.createNote({ title: "New", text: "fresh" });
+    expect(pushed.map((i) => [i.items_key_id, i.content.slice(0, 4)])).toEqual([[KEY_004, "004:"]]);
   });
 });
