@@ -1,0 +1,36 @@
+[package]
+name = "standardnotes-connection"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[lints.clippy]
+unwrap_used = "warn"
+
+[dependencies]
+anyhow = "1.0.104"
+gpui = "=0.2.2"
+gpui-component = "=0.5.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+# Use the OS Metal runtime compiler; avoid requiring Xcode's offline metal toolchain.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+
+# Maintained patch layer (see PATCHES.md). Each crate is the published 0.x source plus documented edits.
+[patch.crates-io]
+gpui = { path = "vendor/gpui-0.2.2" }
+gpui_http_client = { path = "vendor/gpui_http_client-0.2.2" }
+gpui_util = { path = "vendor/gpui_util-0.2.2" }
+gpui-component = { path = "vendor/gpui-component-0.5.1" }
+gpui-component-macros = { path = "vendor/gpui-component-macros-0.5.1" }
+cosmic-text = { path = "vendor/cosmic-text-0.19.0" }
+metal = { path = "vendor/metal-0.29.0" }

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Standard Notes Agent Connection — dependency licenses</title>
+<style>body{font:16px system-ui;max-width:80rem;margin:2rem auto;padding:1rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}section{border-top:1px solid #aaa;margin-top:2rem}li{margin:.5rem 0}</style>
+<h1>Dependency licenses and copyright notices</h1>
+<p>Resolved dependency graph across supported targets and enabled features. This page uses no scripts, remote fonts or network resources. Also retain the application license and THIRD-PARTY-NOTICES.md.</p>
+{{#each licenses}}
+<section><h2>{{name}}</h2><ul>
+{{#each used_by}}
+<li><strong>{{crate.name}} {{crate.version}}</strong> {{crate.repository}}
+{{#each crate.authors}}<div>{{this}}</div>{{/each}}
+</li>
+{{/each}}
+</ul><pre>{{text}}</pre></section>
+{{/each}}
+</html>

@@ -1,0 +1,16 @@
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "CC0-1.0", "0BSD", "NCSA", "Apache-2.0 WITH LLVM-exception"]
+# User explicitly approved these three unmodified MPL dependencies; no blanket MPL grant.
+exceptions = [
+    { crate = "option-ext@=0.2.0", allow = ["MPL-2.0"] },
+    { crate = "cbindgen@=0.28.0", allow = ["MPL-2.0"] },
+    { crate = "dwrote@=0.11.5", allow = ["MPL-2.0"] },
+]
+[licenses.private]
+ignore = true
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,836 @@
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-0.2.2/Cargo.toml gui/vendor/gpui-0.2.2/Cargo.toml
+--- gpui-0.2.2/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-0.2.2/Cargo.toml	2026-10-23 08:30:26.765249385 +0800
+@@ -67,7 +67,7 @@
+     "blade-macros",
+     "blade-util",
+     "bytemuck",
+-    "ashpd/wayland",
++    "ashpd?/wayland",
+     "cosmic-text",
+     "font-kit",
+     "calloop-wayland-source",
+@@ -80,13 +80,18 @@
+     "xkbcommon",
+     "open",
+ ]
++# Desktop-portal file dialogs, URI opening, theme watching and the Secret Service keyring.
++# Off by default: the connector never uses them and they pull unmaintained zbus crates.
++portal = [
++    "ashpd",
++    "oo7",
++]
+ windows-manifest = []
+ x11 = [
+     "blade-graphics",
+     "blade-macros",
+     "blade-util",
+     "bytemuck",
+-    "ashpd",
+     "cosmic-text",
+     "font-kit",
+     "as-raw-xcb-connection",
+@@ -280,6 +285,15 @@
+ 
+ [dependencies.image]
+ version = "0.25.1"
++default-features = false
++features = [
++    "bmp",
++    "gif",
++    "jpeg",
++    "png",
++    "tiff",
++    "webp",
++]
+ 
+ [dependencies.inventory]
+ version = "0.3.19"
+@@ -331,7 +345,7 @@
+ package = "gpui_refineable"
+ 
+ [dependencies.resvg]
+-version = "0.45.0"
++version = "0.48"
+ features = [
+     "text",
+     "system-fonts",
+@@ -375,7 +389,7 @@
+ version = "2.0"
+ 
+ [dependencies.stacksafe]
+-version = "0.1"
++version = "1"
+ 
+ [dependencies.strum]
+ version = "0.27.2"
+@@ -392,7 +406,7 @@
+ version = "2.0.12"
+ 
+ [dependencies.usvg]
+-version = "0.45.0"
++version = "0.48"
+ default-features = false
+ 
+ [dependencies.util]
+@@ -484,7 +498,7 @@
+ optional = true
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.cosmic-text]
+-version = "0.14.0"
++version = "0.19"
+ optional = true
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.filedescriptor]
+@@ -506,6 +520,7 @@
+     "async-std",
+     "native_crypto",
+ ]
++optional = true
+ default-features = false
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.open]
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-0.2.2/src/platform/linux/platform.rs gui/vendor/gpui-0.2.2/src/platform/linux/platform.rs
+--- gpui-0.2.2/src/platform/linux/platform.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-0.2.2/src/platform/linux/platform.rs	2026-10-23 08:29:15.960892649 +0800
+@@ -10,10 +10,12 @@
+     ffi::OsString,
+     fs::File,
+     io::Read as _,
+-    os::fd::{AsFd, AsRawFd, FromRawFd},
++    os::fd::{AsRawFd, FromRawFd},
+     time::Duration,
+ };
+ 
++#[cfg(feature = "portal")]
++use std::os::fd::AsFd as _;
+ use anyhow::{Context as _, anyhow};
+ use async_task::Runnable;
+ use calloop::{LoopSignal, channel::Channel};
+@@ -39,7 +41,7 @@
+ pub(crate) const DOUBLE_CLICK_DISTANCE: Pixels = px(5.0);
+ pub(crate) const KEYRING_LABEL: &str = "zed-github-account";
+ 
+-#[cfg(any(feature = "wayland", feature = "x11"))]
++#[cfg(feature = "portal")]
+ const FILE_PICKER_PORTAL_MISSING: &str =
+     "Couldn't open file picker due to missing xdg-desktop-portal implementation.";
+ 
+@@ -74,7 +76,7 @@
+     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
+     fn run(&self);
+ 
+-    #[cfg(any(feature = "wayland", feature = "x11"))]
++    #[cfg(feature = "portal")]
+     fn window_identifier(
+         &self,
+     ) -> impl Future<Output = Option<ashpd::WindowIdentifier>> + Send + 'static {
+@@ -294,13 +296,13 @@
+     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+         let (done_tx, done_rx) = oneshot::channel();
+ 
+-        #[cfg(not(any(feature = "wayland", feature = "x11")))]
++        #[cfg(not(feature = "portal"))]
+         let _ = (done_tx.send(Ok(None)), options);
+ 
+-        #[cfg(any(feature = "wayland", feature = "x11"))]
++        #[cfg(feature = "portal")]
+         let identifier = self.window_identifier();
+ 
+-        #[cfg(any(feature = "wayland", feature = "x11"))]
++        #[cfg(feature = "portal")]
+         self.foreground_executor()
+             .spawn(async move {
+                 let title = if options.directories {
+@@ -354,13 +356,13 @@
+     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
+         let (done_tx, done_rx) = oneshot::channel();
+ 
+-        #[cfg(not(any(feature = "wayland", feature = "x11")))]
++        #[cfg(not(feature = "portal"))]
+         let _ = (done_tx.send(Ok(None)), directory, suggested_name);
+ 
+-        #[cfg(any(feature = "wayland", feature = "x11"))]
++        #[cfg(feature = "portal")]
+         let identifier = self.window_identifier();
+ 
+-        #[cfg(any(feature = "wayland", feature = "x11"))]
++        #[cfg(feature = "portal")]
+         self.foreground_executor()
+             .spawn({
+                 let directory = directory.to_owned();
+@@ -499,6 +501,22 @@
+         self.with_common(|common| common.auto_hide_scrollbars)
+     }
+ 
++    #[cfg(not(feature = "portal"))]
++    fn write_credentials(&self, _url: &str, _username: &str, _password: &[u8]) -> Task<Result<()>> {
++        Task::ready(Err(anyhow!("Secret Service credentials require the `portal` feature")))
++    }
++
++    #[cfg(not(feature = "portal"))]
++    fn read_credentials(&self, _url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
++        Task::ready(Err(anyhow!("Secret Service credentials require the `portal` feature")))
++    }
++
++    #[cfg(not(feature = "portal"))]
++    fn delete_credentials(&self, _url: &str) -> Task<Result<()>> {
++        Task::ready(Err(anyhow!("Secret Service credentials require the `portal` feature")))
++    }
++
++    #[cfg(feature = "portal")]
+     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
+         let url = url.to_string();
+         let username = username.to_string();
+@@ -518,6 +536,7 @@
+         })
+     }
+ 
++    #[cfg(feature = "portal")]
+     fn read_credentials(&self, url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
+         let url = url.to_string();
+         self.background_executor().spawn(async move {
+@@ -546,6 +565,7 @@
+         })
+     }
+ 
++    #[cfg(feature = "portal")]
+     fn delete_credentials(&self, url: &str) -> Task<Result<()>> {
+         let url = url.to_string();
+         self.background_executor().spawn(async move {
+@@ -598,9 +618,10 @@
+     uri: &str,
+     activation_token: Option<String>,
+ ) {
+-    if let Some(uri) = ashpd::url::Url::parse(uri).log_err() {
++    if let Some(uri) = http_client::Url::parse(uri).log_err() {
+         executor
+             .spawn(async move {
++                #[cfg(feature = "portal")]
+                 match ashpd::desktop::open_uri::OpenFileRequest::default()
+                     .activation_token(activation_token.clone().map(ashpd::ActivationToken::from))
+                     .send_uri(&uri)
+@@ -638,7 +659,10 @@
+ ) {
+     executor
+         .spawn(async move {
++            #[cfg(not(feature = "portal"))]
++            let _ = activation_token;
+             if let Some(dir) = File::open(path.clone()).log_err() {
++                #[cfg(feature = "portal")]
+                 match ashpd::desktop::open_uri::OpenDirectoryRequest::default()
+                     .activation_token(activation_token.map(ashpd::ActivationToken::from))
+                     .send(&dir.as_fd())
+@@ -647,6 +671,8 @@
+                     Ok(_) => return,
+                     Err(e) => log::error!("Failed to open with dbus: {}", e),
+                 }
++                #[cfg(not(feature = "portal"))]
++                drop(dir);
+                 if path.is_dir() {
+                     open::that_detached(path).log_err();
+                 } else {
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-0.2.2/src/platform/linux/text_system.rs gui/vendor/gpui-0.2.2/src/platform/linux/text_system.rs
+--- gpui-0.2.2/src/platform/linux/text_system.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-0.2.2/src/platform/linux/text_system.rs	2026-10-23 08:31:28.448916114 +0800
+@@ -220,14 +220,14 @@
+             .db()
+             .faces()
+             .filter(|face| face.families.iter().any(|family| *name == family.0))
+-            .map(|face| (face.id, face.post_script_name.clone()))
++            .map(|face| (face.id, face.weight, face.post_script_name.clone()))
+             .collect::<SmallVec<[_; 4]>>();
+ 
+         let mut loaded_font_ids = SmallVec::new();
+-        for (font_id, postscript_name) in families {
++        for (font_id, weight, postscript_name) in families {
+             let font = self
+                 .font_system
+-                .get_font(font_id)
++                .get_font(font_id, weight)
+                 .context("Could not load font")?;
+ 
+             // HACK: To let the storybook run and render Windows caption icons. We should actually do better font fallback.
+@@ -278,6 +278,7 @@
+             params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
+             params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
+         );
++        let weight = self.face_weight(font.id());
+         let image = self
+             .swash_cache
+             .get_image(
+@@ -287,6 +288,7 @@
+                     params.glyph_id.0 as u16,
+                     (params.font_size * params.scale_factor).into(),
+                     (subpixel_shift.x, subpixel_shift.y.trunc()),
++                    weight,
+                     cosmic_text::CacheKeyFlags::empty(),
+                 )
+                 .0,
+@@ -314,6 +316,7 @@
+                 params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
+                 params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
+             );
++            let weight = self.face_weight(font.id());
+             let mut image = self
+                 .swash_cache
+                 .get_image(
+@@ -323,7 +326,8 @@
+                         params.glyph_id.0 as u16,
+                         (params.font_size * params.scale_factor).into(),
+                         (subpixel_shift.x, subpixel_shift.y.trunc()),
+-                        cosmic_text::CacheKeyFlags::empty(),
++                        weight,
++                    cosmic_text::CacheKeyFlags::empty(),
+                     )
+                     .0,
+                 )
+@@ -349,6 +353,14 @@
+     /// `LoadedFont.features`, as it will have an arbitrarily chosen or empty value. The only
+     /// current use of this field is for the *input* of `layout_line`, and so it's fine to use
+     /// `font_id_for_cosmic_id` when computing the *output* of `layout_line`.
++    fn face_weight(&self, id: cosmic_text::fontdb::ID) -> cosmic_text::fontdb::Weight {
++        self.font_system
++            .db()
++            .face(id)
++            .map(|face| face.weight)
++            .unwrap_or_default()
++    }
++
+     fn font_id_for_cosmic_id(&mut self, id: cosmic_text::fontdb::ID) -> FontId {
+         if let Some(ix) = self
+             .loaded_fonts
+@@ -357,7 +369,8 @@
+         {
+             FontId(ix)
+         } else {
+-            let font = self.font_system.get_font(id).unwrap();
++            let weight = self.face_weight(id);
++            let font = self.font_system.get_font(id, weight).unwrap();
+             let face = self.font_system.db().face(id).unwrap();
+ 
+             let font_id = FontId(self.loaded_fonts.len());
+@@ -405,9 +418,11 @@
+             font_size.0,
+             None, // We do our own wrapping
+             cosmic_text::Wrap::None,
++            cosmic_text::Ellipsize::None,
+             None,
+             &mut layout_lines,
+             None,
++            cosmic_text::Hinting::Disabled,
+         );
+         let layout = layout_lines.first().unwrap();
+ 
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-0.2.2/src/platform/linux/wayland/client.rs gui/vendor/gpui-0.2.2/src/platform/linux/wayland/client.rs
+--- gpui-0.2.2/src/platform/linux/wayland/client.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-0.2.2/src/platform/linux/wayland/client.rs	2026-10-23 08:28:44.293516958 +0800
+@@ -7,6 +7,7 @@
+     time::{Duration, Instant},
+ };
+ 
++#[cfg(feature = "portal")]
+ use ashpd::WindowIdentifier;
+ use calloop::{
+     EventLoop, LoopHandle,
+@@ -90,9 +91,10 @@
+             serial::{SerialKind, SerialTracker},
+             window::WaylandWindow,
+         },
+-        xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
+     },
+ };
++#[cfg(feature = "portal")]
++use crate::platform::linux::xdg_desktop_portal::{Event as XDPEvent, XDPEventSource};
+ 
+ /// Used to convert evdev scancode to xkb scancode
+ const MIN_KEYCODE: u32 = 8;
+@@ -520,6 +522,8 @@
+ 
+         let mut cursor = Cursor::new(&conn, &globals, 24);
+ 
++        #[cfg(feature = "portal")]
++        {
+         handle
+             .insert_source(XDPEventSource::new(&common.background_executor), {
+                 move |event, _, client| match event {
+@@ -549,6 +553,7 @@
+                 }
+             })
+             .unwrap();
++        }
+ 
+         let mut state = Rc::new(RefCell::new(WaylandClientState {
+             serial_tracker: SerialTracker::new(),
+@@ -863,6 +868,7 @@
+         "Wayland"
+     }
+ 
++    #[cfg(feature = "portal")]
+     fn window_identifier(&self) -> impl Future<Output = Option<WindowIdentifier>> + Send + 'static {
+         async fn inner(surface: Option<wl_surface::WlSurface>) -> Option<WindowIdentifier> {
+             if let Some(surface) = surface {
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-0.2.2/src/platform/linux/x11/client.rs gui/vendor/gpui-0.2.2/src/platform/linux/x11/client.rs
+--- gpui-0.2.2/src/platform/linux/x11/client.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-0.2.2/src/platform/linux/x11/client.rs	2026-10-23 08:28:44.294602204 +0800
+@@ -1,5 +1,6 @@
+ use crate::{Capslock, xcb_flush};
+ use anyhow::{Context as _, anyhow};
++#[cfg(feature = "portal")]
+ use ashpd::WindowIdentifier;
+ use calloop::{
+     EventLoop, LoopHandle, RegistrationToken,
+@@ -56,9 +57,10 @@
+         log_cursor_icon_warning, open_uri_internal,
+         platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
+         reveal_path_internal,
+-        xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
+     },
+ };
++#[cfg(feature = "portal")]
++use crate::platform::linux::xdg_desktop_portal::{Event as XDPEvent, XDPEventSource};
+ use crate::{
+     AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
+     LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, Pixels, Platform,
+@@ -452,6 +454,8 @@
+             )
+             .map_err(|err| anyhow!("Failed to initialize X11 event source: {err:?}"))?;
+ 
++        #[cfg(feature = "portal")]
++        {
+         handle
+             .insert_source(XDPEventSource::new(&common.background_executor), {
+                 move |event, _, client| match event {
+@@ -467,6 +471,7 @@
+                 }
+             })
+             .map_err(|err| anyhow!("Failed to initialize XDP event source: {err:?}"))?;
++        }
+ 
+         xcb_flush(&xcb_connection);
+ 
+@@ -1659,6 +1664,7 @@
+         Some(handles)
+     }
+ 
++    #[cfg(feature = "portal")]
+     fn window_identifier(&self) -> impl Future<Output = Option<WindowIdentifier>> + Send + 'static {
+         let state = self.0.borrow();
+         state
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-0.2.2/src/platform/linux.rs gui/vendor/gpui-0.2.2/src/platform/linux.rs
+--- gpui-0.2.2/src/platform/linux.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-0.2.2/src/platform/linux.rs	2026-10-23 08:28:44.290538209 +0800
+@@ -9,7 +9,7 @@
+ #[cfg(feature = "x11")]
+ mod x11;
+ 
+-#[cfg(any(feature = "wayland", feature = "x11"))]
++#[cfg(feature = "portal")]
+ mod xdg_desktop_portal;
+ 
+ pub(crate) use dispatcher::*;
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui_http_client-0.2.2/Cargo.toml gui/vendor/gpui_http_client-0.2.2/Cargo.toml
+--- gpui_http_client-0.2.2/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui_http_client-0.2.2/Cargo.toml	2026-10-23 08:27:28.210147909 +0800
+@@ -36,20 +36,6 @@
+ [dependencies.anyhow]
+ version = "1.0.86"
+ 
+-[dependencies.async-compression]
+-version = "0.4"
+-features = [
+-    "gzip",
+-    "futures-io",
+-]
+-
+-[dependencies.async-fs]
+-version = "2.1"
+-
+-[dependencies.async-tar]
+-version = "0.5.0-zed"
+-package = "zed-async-tar"
+-
+ [dependencies.bytes]
+ version = "1.0"
+ 
+@@ -75,47 +61,9 @@
+ [dependencies.parking_lot]
+ version = "0.12.1"
+ 
+-[dependencies.reqwest]
+-version = "0.12.15-zed"
+-features = [
+-    "charset",
+-    "http2",
+-    "macos-system-configuration",
+-    "multipart",
+-    "rustls-tls-native-roots",
+-    "socks",
+-    "stream",
+-]
+-default-features = false
+-package = "zed-reqwest"
+-
+-[dependencies.serde]
+-version = "1.0.221"
+-features = [
+-    "derive",
+-    "rc",
+-]
+-
+-[dependencies.serde_json]
+-version = "1.0.144"
+-features = [
+-    "preserve_order",
+-    "raw_value",
+-]
+-
+-[dependencies.sha2]
+-version = "0.10"
+-
+-[dependencies.tempfile]
+-version = "3.20.0"
+-
+ [dependencies.url]
+ version = "2.2"
+ 
+-[dependencies.util]
+-version = "0.2.2"
+-package = "gpui_util"
+-
+ [lints.clippy]
+ dbg_macro = "deny"
+ declare_interior_mutable_const = "deny"
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui_http_client-0.2.2/src/async_body.rs gui/vendor/gpui_http_client-0.2.2/src/async_body.rs
+--- gpui_http_client-0.2.2/src/async_body.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui_http_client-0.2.2/src/async_body.rs	2026-10-23 08:26:51.749479922 +0800
+@@ -88,17 +88,6 @@
+     }
+ }
+ 
+-impl TryFrom<reqwest::Body> for AsyncBody {
+-    type Error = anyhow::Error;
+-
+-    fn try_from(value: reqwest::Body) -> Result<Self, Self::Error> {
+-        value
+-            .as_bytes()
+-            .ok_or_else(|| anyhow::anyhow!("Underlying data is a stream"))
+-            .map(|bytes| Self::from_bytes(Bytes::copy_from_slice(bytes)))
+-    }
+-}
+-
+ impl<T: Into<Self>> From<Option<T>> for AsyncBody {
+     fn from(body: Option<T>) -> Self {
+         match body {
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui_http_client-0.2.2/src/http_client.rs gui/vendor/gpui_http_client-0.2.2/src/http_client.rs
+--- gpui_http_client-0.2.2/src/http_client.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui_http_client-0.2.2/src/http_client.rs	2026-10-23 08:27:28.209922029 +0800
+@@ -1,6 +1,4 @@
+ mod async_body;
+-pub mod github;
+-pub mod github_download;
+ 
+ pub use anyhow::{Result, anyhow};
+ pub use async_body::{AsyncBody, Inner};
+@@ -8,10 +6,7 @@
+ use http::HeaderValue;
+ pub use http::{self, Method, Request, Response, StatusCode, Uri, request::Builder};
+ 
+-use futures::{
+-    FutureExt as _,
+-    future::{self, BoxFuture},
+-};
++use futures::future::BoxFuture;
+ use parking_lot::Mutex;
+ #[cfg(feature = "test-support")]
+ use std::fmt;
+@@ -112,13 +107,6 @@
+         panic!("called as_fake on {}", type_name::<Self>())
+     }
+ 
+-    fn send_multipart_form<'a>(
+-        &'a self,
+-        _url: &str,
+-        _request: reqwest::multipart::Form,
+-    ) -> BoxFuture<'a, anyhow::Result<Response<AsyncBody>>> {
+-        future::ready(Err(anyhow!("not implemented"))).boxed()
+-    }
+ }
+ 
+ /// An [`HttpClient`] that may have a proxy.
+@@ -171,13 +159,6 @@
+         self.client.as_fake()
+     }
+ 
+-    fn send_multipart_form<'a>(
+-        &'a self,
+-        url: &str,
+-        form: reqwest::multipart::Form,
+-    ) -> BoxFuture<'a, anyhow::Result<Response<AsyncBody>>> {
+-        self.client.send_multipart_form(url, form)
+-    }
+ }
+ 
+ /// An [`HttpClient`] that has a base URL.
+@@ -312,13 +293,6 @@
+         self.client.as_fake()
+     }
+ 
+-    fn send_multipart_form<'a>(
+-        &'a self,
+-        url: &str,
+-        request: reqwest::multipart::Form,
+-    ) -> BoxFuture<'a, anyhow::Result<Response<AsyncBody>>> {
+-        self.client.send_multipart_form(url, request)
+-    }
+ }
+ 
+ pub fn read_proxy_from_env() -> Option<Url> {
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui_util-0.2.2/Cargo.toml gui/vendor/gpui_util-0.2.2/Cargo.toml
+--- gpui_util-0.2.2/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui_util-0.2.2/Cargo.toml	2026-10-23 08:24:06.345526061 +0800
+@@ -64,7 +64,7 @@
+ version = "0.3"
+ 
+ [dependencies.futures-lite]
+-version = "1.13"
++version = "2"
+ 
+ [dependencies.git2]
+ version = "0.20.1"
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-component-0.5.1/Cargo.toml gui/vendor/gpui-component-0.5.1/Cargo.toml
+--- gpui-component-0.5.1/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-component-0.5.1/Cargo.toml	2026-10-23 08:24:06.350417828 +0800
+@@ -117,7 +117,7 @@
+ version = "0.3.0"
+ 
+ [dependencies.notify]
+-version = "7.0.0"
++version = "8"
+ 
+ [dependencies.num-traits]
+ version = "0.2"
+@@ -125,8 +125,8 @@
+ [dependencies.once_cell]
+ version = "1.19.0"
+ 
+-[dependencies.paste]
+-version = "1"
++[dependencies.pastey]
++version = "0.2"
+ 
+ [dependencies.regex]
+ version = "1"
+@@ -139,7 +139,7 @@
+ ]
+ 
+ [dependencies.rust-i18n]
+-version = "3"
++version = "4"
+ 
+ [dependencies.rust_decimal]
+ version = "1.37.0"
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' gpui-component-0.5.1/src/theme/color.rs gui/vendor/gpui-component-0.5.1/src/theme/color.rs
+--- gpui-component-0.5.1/src/theme/color.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/gpui-component-0.5.1/src/theme/color.rs	2026-10-23 08:24:06.350550992 +0800
+@@ -423,7 +423,7 @@
+ 
+ macro_rules! color_method {
+     ($color:tt, $scale:tt) => {
+-        paste::paste! {
++        pastey::paste! {
+             #[inline]
+             #[allow(unused)]
+             pub fn [<$color _ $scale>]() -> Hsla {
+@@ -439,7 +439,7 @@
+ 
+ macro_rules! color_methods {
+     ($color:tt) => {
+-        paste::paste! {
++        pastey::paste! {
+             /// Get color by scale number.
+             ///
+             /// The possible scale numbers are:
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' cosmic-text-0.19.0/Cargo.toml gui/vendor/cosmic-text-0.19.0/Cargo.toml
+--- cosmic-text-0.19.0/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/cosmic-text-0.19.0/Cargo.toml	2026-10-23 08:32:24.831288960 +0800
+@@ -72,48 +72,6 @@
+ name = "cosmic_text"
+ path = "src/lib.rs"
+ 
+-[[test]]
+-name = "editor_modified_state"
+-path = "tests/editor_modified_state.rs"
+-
+-[[test]]
+-name = "ellipsize_rendering"
+-path = "tests/ellipsize_rendering.rs"
+-
+-[[test]]
+-name = "richtext_layout"
+-path = "tests/richtext_layout.rs"
+-
+-[[test]]
+-name = "shaping_and_rendering"
+-path = "tests/shaping_and_rendering.rs"
+-
+-[[test]]
+-name = "text_decorations"
+-path = "tests/text_decorations.rs"
+-
+-[[test]]
+-name = "variable_font_weight"
+-path = "tests/variable_font_weight.rs"
+-
+-[[test]]
+-name = "wrap_stability"
+-path = "tests/wrap_stability.rs"
+-
+-[[test]]
+-name = "wrap_word_fallback"
+-path = "tests/wrap_word_fallback.rs"
+-
+-[[bench]]
+-name = "layout"
+-path = "benches/layout.rs"
+-harness = false
+-
+-[[bench]]
+-name = "text_shaping_benchmarks"
+-path = "benches/text_shaping_benchmarks.rs"
+-harness = false
+-
+ [dependencies.bitflags]
+ version = "2.10.0"
+ 
+@@ -126,7 +84,7 @@
+ optional = true
+ 
+ [dependencies.fontdb]
+-version = "0.23"
++version = "0.24"
+ default-features = false
+ 
+ [dependencies.harfrust]
+@@ -202,13 +160,5 @@
+ [dependencies.unicode-segmentation]
+ version = "1.12.0"
+ 
+-[dev-dependencies.criterion]
+-version = "0.8.1"
+-features = ["cargo_bench_support"]
+-default-features = false
+-
+-[dev-dependencies.tiny-skia]
+-version = "0.11.4"
+-
+ [profile.test]
+ opt-level = 1
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' metal-0.29.0/Cargo.toml gui/vendor/metal-0.29.0/Cargo.toml
+--- metal-0.29.0/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/metal-0.29.0/Cargo.toml	2026-10-23 08:33:07.399975516 +0800
+@@ -42,60 +42,6 @@
+     "x86_64-apple-ios",
+ ]
+ 
+-[[example]]
+-name = "window"
+-
+-[[example]]
+-name = "headless-render"
+-
+-[[example]]
+-name = "library"
+-
+-[[example]]
+-name = "raytracing"
+-
+-[[example]]
+-name = "reflection"
+-
+-[[example]]
+-name = "caps"
+-
+-[[example]]
+-name = "argument-buffer"
+-
+-[[example]]
+-name = "bindless"
+-
+-[[example]]
+-name = "circle"
+-path = "examples/circle/main.rs"
+-
+-[[example]]
+-name = "compute"
+-path = "examples/compute/main.rs"
+-
+-[[example]]
+-name = "mps"
+-required-features = ["mps"]
+-
+-[[example]]
+-name = "embedded-lib"
+-path = "examples/compute/embedded-lib.rs"
+-
+-[[example]]
+-name = "compute-argument-buffer"
+-path = "examples/compute/compute-argument-buffer.rs"
+-
+-[[example]]
+-name = "bind"
+-
+-[[example]]
+-name = "events"
+-required-features = ["dispatch"]
+-
+-[[example]]
+-name = "fence"
+-
+ [dependencies.bitflags]
+ version = "2"
+ 
+@@ -118,29 +64,8 @@
+ [dependencies.objc]
+ version = "0.2.4"
+ 
+-[dependencies.paste]
+-version = "1"
+-
+-[dev-dependencies.cocoa]
+-version = "0.25.0"
+-
+-[dev-dependencies.cty]
+-version = "0.2.1"
+-
+-[dev-dependencies.glam]
+-version = "0.27"
+-
+-[dev-dependencies.png]
+-version = "0.17"
+-
+-[dev-dependencies.rand]
+-version = "0.8"
+-
+-[dev-dependencies.sema]
+-version = "0.1.4"
+-
+-[dev-dependencies.winit]
+-version = "0.29"
++[dependencies.pastey]
++version = "0.2"
+ 
+ [features]
+ default = ["link"]
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' metal-0.29.0/src/lib.rs gui/vendor/metal-0.29.0/src/lib.rs
+--- metal-0.29.0/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ gui/vendor/metal-0.29.0/src/lib.rs	2026-10-23 08:33:07.400217581 +0800
+@@ -14,7 +14,7 @@
+ #[macro_use]
+ pub extern crate foreign_types;
+ #[macro_use]
+-pub extern crate paste;
++pub extern crate pastey;
+ 
+ use std::{borrow::Borrow, marker::PhantomData, mem, ops::Deref, os::raw::c_void};
+ 
