@@ -69,7 +69,7 @@ function sameCiphertext(a: http.RawItem, b: http.RawItem): boolean {
 
 export interface SnClient {
   prepareChange(change: SafeChange): Promise<PreparedChange>;
-  commitChange(plan: PreparedChange, options?: { reconcileOnly?: boolean }): Promise<void>;
+  commitChange(plan: PreparedChange, options?: { reconcileOnly?: boolean; signal?: AbortSignal }): Promise<void>;
   getRevision(uuid: string): Promise<string>;
   getNoteWithRevision(uuid: string): Promise<(Note & { revision: string }) | null>;
   getTagWithRevision(uuid: string): Promise<(Tag & { revision: string }) | null>;
@@ -948,6 +948,8 @@ function buildClient(state: ClientState): SnClient {
       if (before?.content_type === "Tag") await writableTagTargets(before, after);
       // Authenticate both ciphertext fields before transmitting even a restored plan.
       await decryptItemContent(after, contentKeys());
+      // Cancellation during read-only preflight must not turn into a later mutation.
+      options?.signal?.throwIfAborted();
       try {
         const res = await pushItems([after]);
         if (res.conflicts.length > 0) throw new Error("Conflict; no automatic retry");

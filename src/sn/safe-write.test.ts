@@ -94,6 +94,20 @@ beforeEach(async () => {
 });
 
 describe("bounded safe writes", () => {
+  it("does not transmit a mutation when cancelled during read-only preflight", async () => {
+    const plan=await client.prepareChange({kind:"note_update",uuid:noteUuid,revision:await revision(),append:" cancelled"});
+    const controller=new AbortController();
+    const base=mocks.sync.getMockImplementation()!;
+    let release!:()=>void, entered!:()=>void;
+    const paused=new Promise<void>(resolve=>{release=resolve;});
+    const started=new Promise<void>(resolve=>{entered=resolve;});
+    mocks.sync.mockImplementationOnce(async(...args:unknown[])=>{entered();await paused;return base(...args);});
+    const pending=client.commitChange(plan,{signal:controller.signal});
+    const rejected=expect(pending).rejects.toThrow();
+    await started;controller.abort();release();
+    await rejected;
+    expect(writes).toHaveLength(0);
+  });
   it("does not search protected title/text or count protected matches toward the hit limit", async () => {
     await edit(noteUuid, { title: "common unique-title-secret", text: "unique-body-secret", protected: true });
     for (let i = 0; i < 5; i++) {

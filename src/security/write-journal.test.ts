@@ -4,14 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import type { PreparedChange, SnClient } from "../sn/client.js";
 import { WriteJournal } from "./write-journal.js";
-import { withAccountLock, unlockAbandonedAccount } from "./account-state.js";
+import { withAccountLock, unlockAbandonedAccount, privateDirectory } from "./account-state.js";
 
 const plan = { before: { content: "prior ciphertext" }, after: { uuid: "11111111-1111-4111-8111-111111111111", content: "new ciphertext" }, preview: { title: "PRIVATE TITLE", text: "PRIVATE BODY" }, change: {kind:"note_create",title:"PRIVATE TITLE",text:"PRIVATE BODY"} } as unknown as PreparedChange;
 const fake = () => ({ prepareChange: vi.fn(async () => plan), commitChange: vi.fn(async () => undefined), prepareRecovery: vi.fn(async () => plan) }) as unknown as SnClient;
 
 async function fixture(fn: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "sn-journal-"));
-  try { await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); }
+  const root = await mkdtemp(path.join(os.tmpdir(), "sn-journal-"));
+  const dir = path.join(root,"private");
+  try { await privateDirectory(dir); await fn(dir); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 describe("encrypted write journal", () => {
@@ -24,7 +25,7 @@ describe("encrypted write journal", () => {
     const bytes = await readFile(file, "utf8");
     expect(bytes).not.toContain("PRIVATE");
     expect(bytes).not.toContain("ciphertext");
-    expect((await stat(file)).mode & 0o777).toBe(0o600);
+    if(process.platform!=="win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
     const reopened = new WriteJournal(dir, key);
     await expect(reopened.commit(client, prepared.operationId)).rejects.toThrow(/approval required/);
     expect(client.commitChange).not.toHaveBeenCalled();
@@ -59,8 +60,22 @@ describe("encrypted write journal", () => {
     await writeFile(file, original.replace(/:(.)/, (_match, first: string) => `:${first === "0" ? "1" : "0"}`));
     await expect(j.status(operationId)).rejects.toThrow();
     await rm(file);
-    await symlink("/etc/passwd", file);
+    await symlink(process.platform === "win32" ? dir : "/etc/passwd", file, process.platform === "win32" ? "junction" : undefined);
     await expect(j.status(operationId)).rejects.toThrow();
+  }));
+  it("durably rejects a preview and prevents approval or any network write", async () => fixture(async (dir) => {
+    const c=fake(), key=new Uint8Array(32).fill(4), j=new WriteJournal(dir,key);
+    const {operationId}=await j.prepare(c,{kind:"note_create",title:"t",text:"b"}) as {operationId:string};
+    expect(await j.pending()).toMatchObject([{operationId,approved:false}]);
+    await j.approve(operationId);
+    expect(await j.preview(operationId)).toMatchObject({approved:true});
+    await j.reject(operationId);
+    const reopened=new WriteJournal(dir,key);
+    expect(await reopened.status(operationId)).toMatchObject({status:"rejected"});
+    expect(await reopened.pending()).toEqual([]);
+    await expect(reopened.approve(operationId)).rejects.toThrow(/fresh/);
+    await expect(reopened.commit(c,operationId)).rejects.toThrow(/rejected/);
+    expect(c.commitChange).not.toHaveBeenCalled();
   }));
   it("rejects expired unused previews without a network write", async () => fixture(async (dir) => {
     const c = fake(); const j = new WriteJournal(dir,new Uint8Array(32).fill(9));
