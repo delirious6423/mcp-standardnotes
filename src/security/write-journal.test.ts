@@ -101,4 +101,37 @@ describe("account-wide cross-process exclusion", () => {
     await unlockAbandonedAccount(dir,true);
     expect(await readdir(dir)).not.toContain("account.lock");
   }));
+
+  it("approves a batch once, records partial outcomes per item, and reconciles without resending", async () => fixture(async (dir) => {
+    const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222";
+    const plans = [{ ...plan, after: { uuid: a } }, { ...plan, after: { uuid: b } }] as unknown as PreparedChange[];
+    const preview = { kind: "batch", items: 2, counts: { note_trash: 2 }, plan: [{ title: "PRIVATE TITLE" }] };
+    const c = { ...fake(),
+      prepareChanges: vi.fn(async () => ({ plans, preview })),
+      prepareRecoveries: vi.fn(async () => ({ plans, preview, skipped: [] as unknown[] })),
+      commitChanges: vi.fn().mockResolvedValueOnce({ confirmed: [a], unconfirmed: [b] }).mockResolvedValue({ confirmed: [a, b], unconfirmed: [] }),
+    } as unknown as SnClient;
+    const j = new WriteJournal(dir, new Uint8Array(32).fill(9));
+    const prepared = await j.prepareBatch(c, []) as { operationId: string; preview: unknown };
+    expect(prepared.preview).toEqual(preview);
+    expect(await readFile(path.join(dir, `${prepared.operationId}.enc`), "utf8")).not.toContain("PRIVATE");
+    expect((await j.preview(prepared.operationId)).preview).toEqual(preview);
+    await expect(j.commit(c, prepared.operationId)).rejects.toThrow(/approval required/);
+    await j.approve(prepared.operationId);
+    await expect(j.commit(c, prepared.operationId)).rejects.toThrow(/1 of 2 writes confirmed/);
+    expect(await j.status(prepared.operationId)).toMatchObject({ status: "uncertain", items: 2, unconfirmed: [b] });
+    expect(await j.prepareUndo(c, prepared.operationId)).toMatchObject({ status: "prepared" });
+    expect(c.prepareRecoveries).toHaveBeenLastCalledWith(plans, { appliedOnly: true });
+    expect(await j.commit(c, prepared.operationId)).toMatchObject({ status: "committed", items: 2 });
+    expect(vi.mocked(c.commitChanges).mock.calls.map((call) => call[1])).toEqual([{ reconcileOnly: false }, { reconcileOnly: true }]);
+    expect(c.commitChange).not.toHaveBeenCalled();
+    expect(await j.prepareUndo(c, prepared.operationId)).toMatchObject({ status: "prepared", preview });
+    expect(c.prepareRecoveries).toHaveBeenLastCalledWith(plans, { appliedOnly: false });
+    vi.mocked(c.prepareRecoveries).mockResolvedValueOnce({ plans, preview, skipped: [{ uuid: a, reason: "tag_create" }] } as never);
+    expect(await j.prepareUndo(c, prepared.operationId)).toMatchObject({ skipped: [{ uuid: a, reason: "tag_create" }] });
+    const conflicted = await j.prepareBatch(c, []) as { operationId: string };
+    await j.approve(conflicted.operationId);
+    vi.mocked(c.commitChanges).mockRejectedValueOnce(new Error(`Conflict on ${a}: expected item changed, disappeared, or UUID collided; nothing was sent`));
+    await expect(j.commit(c, conflicted.operationId)).rejects.toThrow(/nothing was sent. Re-read/);
+  }));
 });

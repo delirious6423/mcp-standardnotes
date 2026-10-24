@@ -35,6 +35,8 @@ export const searchInput = z.object({
 
 export const getInput = z.object({ uuid: uuidSchema });
 
+export const getBatchInput = z.object({ uuids: z.array(uuidSchema).min(1).max(200) });
+
 const tagsArraySchema = z.array(uuidSchema).max(64);
 
 export const createInput = z.object({

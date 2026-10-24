@@ -47,9 +47,11 @@ For this machine, dotfiles `agents/configure.py` manages the same entry for Pi/P
 
 ## Tools and writes
 
-Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_stats`, `tags_list`, `tags_get`. Reads of an individual item include an opaque revision paired with that exact ciphertext snapshot.
+Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_get_batch` (up to 200 notes, one sync), `notes_stats`, `tags_list`, `tags_get`. Reads of an individual item include an opaque revision paired with that exact ciphertext snapshot.
 
 1. Agent calls `writes_prepare` with one change. Available kinds: `note_create`, `note_update` (replace body, append, rename), `note_trash`, `note_restore`, `tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Existing-item changes require the read revision. Body writes support plain-text/Markdown only; structured-note body conversion is deliberately unavailable. Body edits refresh the derived plain preview and remove stale HTML previews; renames/trash preserve them.
+
+   For more than a few changes, call `writes_prepare_batch` with up to 200 changes instead: one sync, one preview, one approval. Several changes to the same item compose in order and must cite the same revision. Commit is all-or-nothing at preflight: if any item is stale, protected or changed, nothing is sent. Items are pushed in chunks of 50 and read back; if only some land, the operation becomes `uncertain`, `writes_status` lists the unconfirmed items, and retrying the same operation UUID only reconciles. A tag created in a batch cannot be attached in the same batch. Undo of a batch stages one recovery batch. For an `uncertain` batch, undo covers only items that landed (exact never-applied items are skipped; any other change is a conflict). Created tags are kept and listed in `skipped`. During commit, a server conflict or cancellation stops the remaining chunks.
 2. `writes_commit` opens the native Standard Notes Agent Connection window for the saved operation. It shows the full before/after preview and the pinned account (local journal-account binding, not a cloud check); review it, tick the consent box, and Approve or Reject. Previews expire after one hour. There is no MCP approval tool. The terminal `bin/standardnotes-mcp approve OPERATION_UUID` flow is legacy/debug only, and the currently installed pre-GUI build uses it until the GUI-era install gate passes.
 
    **Threat model:** human approval protects the MCP tool surface. It is not an OS sandbox and not proof of human presence: any process running as your user with shell and keychain access can invoke the private GUI bridge or the connector directly and approve its own write. Do not give untrusted agents unrestricted shell access under your account; stronger isolation (separate user/service, OS user-presence prompt) is a separate design that is not implemented.
@@ -57,7 +59,7 @@ Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_stats`, `tags_list
 4. After an uncertain outcome, inspect `writes_status`. Retry ONLY the same operation UUID to reconcile. Previously attempted operations never resend; they can confirm an exact applied ciphertext or fail closed. Do not create a replacement operation blindly.
 5. `writes_undo_prepare` stages recovery of a confirmed operation only if the item still matches what it wrote. Approve and commit the new preview separately. New-note undo uses Trash; tag creation cannot be undone through MCP.
 
-There is no permanent deletion or tag deletion tool. Tags have no reversible trash in Standard Notes, so remove obsolete tags manually in the official app. No bulk cleanup, cross-format conversion, tag hierarchy changes, or scheduling is exposed by the safe interface.
+There is no permanent deletion or tag deletion tool. Tags have no reversible trash in Standard Notes, so remove obsolete tags manually in the official app. No cross-format conversion, tag hierarchy changes, or scheduling is exposed by the safe interface.
 
 ## Crash recovery and undo installation
 

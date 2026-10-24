@@ -18,4 +18,7 @@ export const changeInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("tag_detach"), uuid, revision, noteUuid: uuid }).strict(),
 ]).refine((v) => v.kind !== "note_update" || ((v.title !== undefined || v.text !== undefined || v.append !== undefined) && !(v.text !== undefined && v.append !== undefined)), "Provide title, text or append; do not combine text and append");
 
+// One approval for up to 200 changes. Several changes to one item compose into one write.
+export const batchInput = z.object({ changes: z.array(changeInput).min(1).max(200) }).strict();
+
 export const operationInput = z.object({ operationId: uuid }).strict();

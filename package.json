@@ -61,7 +61,7 @@
     "keytar": "^7.9.0",
     "libsodium-wrappers-sumo": "^0.8.4",
     "undici": "^7.30.1",
-    "zod": "^3.23.0"
+    "zod": "^4.6.7"
   },
   "overrides": {
     "fast-uri": "^3.1.9",

@@ -23,16 +23,21 @@ assert source.read_text() == original
 print("PASS regression canary: old protected-search behavior fails its assertion; fixed source restored")
 
 cancellation = "options?.signal?.throwIfAborted();"
-assert original.count(cancellation) == 1, "Cancellation boundary moved; update canary deliberately"
-try:
-    source.write_text(original.replace(cancellation, "// old behavior: cancellation ignored"))
-    run = subprocess.run(
-        ["npm", "test", "--", "src/sn/safe-write.test.ts", "-t", "cancelled during read-only preflight"],
-        capture_output=True, text=True, timeout=60, check=False,
-    )
-    output = run.stdout + run.stderr
-    assert run.returncode == 1 and "AssertionError" in output and "cancelled during read-only preflight" in output, output
-finally:
-    source.write_text(original)
-assert source.read_text() == original
-print("PASS regression canary: preflight cancellation fails without the send-boundary guard; fixed source restored")
+# Send boundaries: single write, batch preflight, between batch chunks; each must have its own failing test.
+assert original.count(cancellation) == 3, "Cancellation boundary moved; update canary deliberately"
+boundaries = [i for i in range(len(original)) if original.startswith(cancellation, i)]
+for at, name in zip(boundaries, ["does not transmit a mutation when cancelled during read-only preflight",
+                                 "a batch is cancelled during read-only preflight",
+                                 "stops sending further chunks after a server conflict or cancellation"]):
+    try:
+        source.write_text(original[:at] + "// old behavior: cancellation ignored" + original[at + len(cancellation):])
+        run = subprocess.run(
+            ["npm", "test", "--", "src/sn/safe-write.test.ts", "-t", name],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        output = run.stdout + run.stderr
+        assert run.returncode == 1 and "AssertionError" in output and name in output, output
+    finally:
+        source.write_text(original)
+    assert source.read_text() == original
+print("PASS regression canary: preflight cancellation fails without any of the three send-boundary guards; fixed source restored")

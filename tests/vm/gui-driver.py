@@ -39,6 +39,12 @@ def eventually(fn, message, seconds=60):
         if value:
             return value
         time.sleep(.2)
+    if persist and window():
+        # Keep the failing frame and what OCR read from it; previews are synthetic fixtures.
+        image, data = frame()
+        if data:
+            (out / f'failure-{os.getpid()}.png').write_bytes(data)
+            (out / f'failure-{os.getpid()}.json').write_text(json.dumps([w['text'] for w in words()]))
     raise AssertionError(message)
 
 win = eventually(window, 'native GPUI window did not open')
@@ -49,7 +55,8 @@ def png_bytes(image):
     return buffer.getvalue()
 
 def ocr(data, *options):
-    return list(csv.DictReader(io.StringIO(run(['tesseract', 'stdin', 'stdout', *options, 'tsv'], input=data).stdout.decode()), delimiter='\t'))
+    # OCR words can start with an unbalanced ASCII quote; CSV quoting would swallow later rows (buttons).
+    return list(csv.DictReader(io.StringIO(run(['tesseract', 'stdin', 'stdout', *options, 'tsv'], input=data).stdout.decode()), delimiter='\t', quoting=csv.QUOTE_NONE))
 
 def frame():
     w = window()

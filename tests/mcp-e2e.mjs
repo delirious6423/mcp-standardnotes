@@ -266,6 +266,27 @@ try {
   await call(b,'writes_commit',{operationId:attach.operationId});
   tag=await call(a,'tags_get',{uuid:tag.uuid});
   check(tag.noteUuids.includes(noteId),'tag attachment');
+  // Batch: one approval, one push request, item-level composition, replay and whole-batch undo.
+  const createdId=(await call(b,'writes_status',{operationId:create.operationId})).uuid;
+  const many=await call(a,'notes_get_batch',{uuids:[noteId,createdId]});
+  check(many.notes.length===2 && many.missing.length===0 && many.notes.every(n=>/^[a-f0-9]{64}$/.test(n.revision)),'batch read returns revisions');
+  const created=many.notes.find(n=>n.uuid===createdId);
+  const batch=await call(a,'writes_prepare_batch',{changes:[
+    {kind:'tag_attach',uuid:tag.uuid,revision:tag.revision,noteUuid:createdId},
+    {kind:'note_update',uuid:createdId,revision:created.revision,title:'Batch renamed'},
+    {kind:'note_trash',uuid:createdId,revision:created.revision}]});
+  check(batch.preview.kind==='batch' && batch.preview.items===2 && JSON.stringify(batch.preview).includes('Batch renamed'),'batch preview lists every item change');
+  const batchRequests=mutationRequests;
+  await call(a,'writes_commit',{operationId:batch.operationId});
+  check(mutationRequests===batchRequests+1,'batch commits in one push request');
+  content=await decryptItemContent(store.get(createdId),keyMap);
+  check(content.title==='Batch renamed' && content.trashed===true,'batch composes changes to one note');
+  check((await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(createdId),'batch attaches tag');
+  check((await call(b,'writes_commit',{operationId:batch.operationId})).replay && mutationRequests===batchRequests+1,'batch replay sends nothing');
+  const batchUndo=await call(b,'writes_undo_prepare',{operationId:batch.operationId});
+  await call(b,'writes_commit',{operationId:batchUndo.operationId});
+  content=await decryptItemContent(store.get(createdId),keyMap);
+  check(content.title==='Timeout test' && !content.trashed && !(await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(createdId),'batch undo restores every item');
   await rejected(a,'writes_prepare',{change:{kind:'note_trash',uuid:noteId,revision,permanent:true}});
   await rejected(a,'writes_prepare',{change:{kind:'recovery',uuid:noteId,revision}});
   if(guiMode) {

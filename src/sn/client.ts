@@ -39,6 +39,7 @@ import type {
   VaultStats,
 } from "./types.js";
 import { fromHex, toHex, sha256Hex } from "./crypto.js";
+import { batchPreview, type BatchPreview } from "./batch-preview.js";
 
 export type SafeChange =
   | { kind: "note_create"; title: string; text: string; noteType?: "plain-text" | "markdown" }
@@ -49,8 +50,13 @@ export type SafeChange =
   | { kind: "tag_attach" | "tag_detach"; uuid: string; revision: string; noteUuid: string }
   | { kind: "recovery"; uuid: string; revision: string };
 
+type CreateChange = Extract<SafeChange, { kind: "note_create" | "tag_create" }>;
+type EditChange = Exclude<SafeChange, CreateChange | { kind: "recovery" }>;
+
 export interface PreparedChange {
   change: SafeChange;
+  /** Every change composed into this one write, when there was more than one. */
+  changes?: SafeChange[];
   before: http.RawItem | null;
   after: http.RawItem;
   preview: unknown;
@@ -62,6 +68,9 @@ export function itemRevision(raw: http.RawItem): Promise<string> {
     raw.content, raw.enc_item_key, raw.items_key_id ?? null, raw.updated_at_timestamp,
   ]));
 }
+
+/** Items per sync request when committing a batch. */
+const BATCH_PUSH = 50;
 
 function sameCiphertext(a: http.RawItem, b: http.RawItem): boolean {
   return a.uuid === b.uuid && a.content_type === b.content_type &&
@@ -77,6 +86,12 @@ export interface SnClient {
   getTagWithRevision(uuid: string): Promise<(Tag & { revision: string }) | null>;
   getRawItem(uuid: string): Promise<http.RawItem | null>;
   prepareRecovery(plan: PreparedChange): Promise<PreparedChange>;
+  /** Batches use one sync to prepare and one to commit, so a cleanup does not hit rate limits. */
+  prepareChanges(changes: SafeChange[]): Promise<{ plans: PreparedChange[]; preview: BatchPreview }>;
+  /** Tag creations are kept (reported in `skipped`); with appliedOnly, items that never landed are skipped too. */
+  prepareRecoveries(plans: PreparedChange[], options?: { appliedOnly?: boolean }): Promise<{ plans: PreparedChange[]; preview: BatchPreview; skipped: Array<{ uuid: string; reason: "tag_create" | "not_applied" }> }>;
+  commitChanges(plans: PreparedChange[], options?: { reconcileOnly?: boolean; signal?: AbortSignal }): Promise<{ confirmed: string[]; unconfirmed: string[] }>;
+  getNotesWithRevision(uuids: string[]): Promise<{ notes: Array<Note & { revision: string }>; missing: string[] }>;
   listNotes(opts: {
     limit: number;
     offset: number;
@@ -788,12 +803,172 @@ function buildClient(state: ClientState): SnClient {
     }
   };
 
-  const reviewPreview = async (kind: SafeChange["kind"], before: http.RawItem | null, after: http.RawItem) => ({
+  const reviewPreview = async (kind: string, before: http.RawItem | null, after: http.RawItem) => ({
     kind,
     uuid: after.uuid,
     before: before ? await decryptItemContent(before, contentKeys()) : null,
     after: await decryptItemContent(after, contentKeys()),
   });
+
+  const noteTitle = (uuid: string): string | undefined => {
+    const note = state.notesCache.get(uuid);
+    return note && !note.protected ? note.title : undefined;
+  };
+
+  // One plan per target item from the current snapshot; callers sync first. Several changes to
+  // the same item compose in order into one write, and all must cite the same current revision.
+  const planCreate = async (change: CreateChange, now: string): Promise<PreparedChange> => {
+    const uuid = crypto.randomUUID();
+    const key = defaultItemsKey();
+    const note = change.kind === "note_create";
+    if (note && change.noteType !== undefined &&
+        change.noteType !== "plain-text" && change.noteType !== "markdown") {
+      throw new Error("Only plain-text and markdown note creation is supported");
+    }
+    if (change.kind === "note_create" && Buffer.byteLength(change.text, "utf8") > 10 * 1024 * 1024) {
+      throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
+    }
+    const encrypted = change.kind === "note_create"
+      ? await encryptNote({ uuid, title: change.title, text: change.text,
+          noteType: change.noteType ?? "plain-text" }, key)
+      : await encryptTag({ uuid, title: change.title, references: [] }, key);
+    const after: http.RawItem = { uuid, content_type: note ? "Note" : "Tag", ...encrypted,
+      created_at: now, updated_at: now, created_at_timestamp: 0,
+      updated_at_timestamp: 0, deleted: false };
+    return {
+      change: { ...change },
+      before: null,
+      after,
+      preview: await reviewPreview(change.kind, null, after),
+    };
+  };
+
+  const applyChange = (content: Record<string, unknown>, change: EditChange): void => {
+    switch (change.kind) {
+      case "note_update": {
+        if (change.text !== undefined && change.append !== undefined) {
+          throw new Error("Specify text or append, not both");
+        }
+        if (change.text !== undefined || change.append !== undefined) {
+          const type = content.noteType ?? "plain-text";
+          const editor = content.editorIdentifier;
+          if ((type !== "plain-text" && type !== "markdown") ||
+              (editor !== undefined && editor !== "org.standardnotes.advanced-markdown-editor") ||
+              (content.text !== undefined && typeof content.text !== "string")) {
+            throw new Error("Body edits require a known plain-text or markdown note");
+          }
+          const nextText = change.text ?? ((content.text as string | undefined) ?? "") + change.append;
+          if (Buffer.byteLength(nextText, "utf8") > 10 * 1024 * 1024) {
+            throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
+          }
+          content.text = nextText;
+          content.preview_plain = nextText.slice(0, 160);
+          // These are known text derivatives, not opaque application metadata.
+          delete content.preview_html;
+        }
+        if (change.title !== undefined) content.title = change.title;
+        break;
+      }
+      case "note_trash": content.trashed = true; break;
+      case "note_restore": content.trashed = false; break;
+      case "tag_update": content.title = change.title; break;
+      case "tag_attach":
+      case "tag_detach": {
+        if (content.references !== undefined && !Array.isArray(content.references)) {
+          throw new Error("Malformed tag references");
+        }
+        const refs = (content.references ?? []) as unknown[];
+        const matches = (ref: unknown) => ref !== null && typeof ref === "object" &&
+          (ref as Record<string, unknown>).uuid === change.noteUuid &&
+          (ref as Record<string, unknown>).content_type === "Note";
+        content.references = change.kind === "tag_detach"
+          ? refs.filter((ref) => !matches(ref))
+          : refs.some(matches) ? refs : [...refs, { uuid: change.noteUuid, content_type: "Note" }];
+        break;
+      }
+      default: throw new Error("Unsupported change");
+    }
+  };
+
+  const planEdit = async (group: EditChange[], now: string): Promise<PreparedChange> => {
+    const first = group[0]!;
+    const typeOf = (change: EditChange) => change.kind.startsWith("note_") ? "Note" : "Tag";
+    const raw = state.encryptedItemsRaw.get(first.uuid);
+    if (!raw || raw.deleted || raw.content_type !== typeOf(first)) {
+      throw new Error(`Item ${first.uuid} not found or has wrong type`);
+    }
+    const revision = await itemRevision(raw);
+    for (const change of group) {
+      if (typeOf(change) !== raw.content_type) throw new Error(`Item ${first.uuid} has mixed note and tag changes`);
+      if (change.revision !== revision) throw new Error("Stale revision; reconcile before retry");
+      if (change.kind === "tag_attach" || change.kind === "tag_detach") await writableNote(change.noteUuid);
+    }
+    if (raw.content_type === "Note") await writableNote(raw.uuid);
+    const content = await decryptItemContent(raw, contentKeys());
+    for (const change of group) applyChange(content, change);
+    const appData = content.appData === undefined ? {} : objectMap(content.appData);
+    const domain = appData["org.standardnotes.sn"] === undefined
+      ? {} : objectMap(appData["org.standardnotes.sn"]);
+    content.appData = { ...appData, "org.standardnotes.sn": { ...domain, client_updated_at: now } };
+    const after = {
+      ...raw,
+      ...await rewriteItemContent(raw, content, contentKeys(), defaultItemsKey()),
+      updated_at: now,
+    };
+    return {
+      change: { ...first },
+      ...(group.length > 1 ? { changes: group.map((change) => ({ ...change })) } : {}),
+      before: { ...raw },
+      after,
+      preview: await reviewPreview(group.map((change) => change.kind).join("+"), raw, after),
+    };
+  };
+
+  const planChanges = async (changes: SafeChange[]): Promise<PreparedChange[]> => {
+    const now = new Date().toISOString();
+    const groups = new Map<string, EditChange[]>();
+    const order: Array<CreateChange | string> = [];
+    for (const change of changes) {
+      if (change.kind === "recovery") throw new Error("Recovery is internal; use prepareRecovery");
+      if (change.kind === "note_create" || change.kind === "tag_create") { order.push(change); continue; }
+      const group = groups.get(change.uuid);
+      if (group) group.push(change);
+      else { groups.set(change.uuid, [change]); order.push(change.uuid); }
+    }
+    const plans: PreparedChange[] = [];
+    for (const entry of order) {
+      plans.push(typeof entry === "string" ? await planEdit(groups.get(entry)!, now) : await planCreate(entry, now));
+    }
+    return plans;
+  };
+
+  // Callers sync first, so a batch of recoveries shares one snapshot.
+  const recoverPlan = async (plan: PreparedChange): Promise<PreparedChange> => {
+    const current = state.encryptedItemsRaw.get(plan.after.uuid);
+    if (!current || !sameCiphertext(current, plan.after)) {
+      throw new Error("Recovery conflict: item no longer matches the applied plan");
+    }
+    if (current.content_type === "Note") await writableNote(current.uuid);
+    if (plan.change.kind === "tag_attach" || plan.change.kind === "tag_detach") {
+      await writableNote(plan.change.noteUuid);
+    }
+    if (!plan.before) {
+      if (current.content_type !== "Note") throw new Error("Tag creation cannot be undone safely");
+      const [trash] = await planChanges([{ kind: "note_trash", uuid: current.uuid, revision: await itemRevision(current) }]);
+      return trash!;
+    }
+    if (plan.before.deleted || plan.before.uuid !== current.uuid ||
+        plan.before.content_type !== current.content_type) throw new Error("Invalid recovery source");
+    const after = { ...current, content: plan.before.content, enc_item_key: plan.before.enc_item_key,
+      items_key_id: plan.before.items_key_id };
+    if (current.content_type === "Tag") await writableTagTargets(current, after);
+    return {
+      change: { kind: "recovery", uuid: current.uuid, revision: await itemRevision(current) },
+      before: { ...current },
+      after,
+      preview: await reviewPreview("recovery", current, after),
+    };
+  };
 
   return {
     async getNoteWithRevision(uuid) {
@@ -827,135 +1002,53 @@ function buildClient(state: ClientState): SnClient {
 
     async prepareRecovery(plan) {
       await fullSync(state);
-      const current = state.encryptedItemsRaw.get(plan.after.uuid);
-      if (!current || !sameCiphertext(current, plan.after)) {
-        throw new Error("Recovery conflict: item no longer matches the applied plan");
+      return recoverPlan(plan);
+    },
+
+    async prepareRecoveries(plans, options) {
+      await fullSync(state);
+      const recovered: PreparedChange[] = [];
+      const skipped: Array<{ uuid: string; reason: "tag_create" | "not_applied" }> = [];
+      for (const plan of plans) {
+        const uuid = plan.after.uuid;
+        if (!plan.before && plan.after.content_type === "Tag") { skipped.push({ uuid, reason: "tag_create" }); continue; }
+        const current = state.encryptedItemsRaw.get(uuid);
+        // Only an exact never-applied state is skipped; anything else goes through recoverPlan's conflict check.
+        if (options?.appliedOnly && (plan.before ? current !== undefined && sameCiphertext(current, plan.before) : current === undefined)) {
+          skipped.push({ uuid, reason: "not_applied" }); continue;
+        }
+        recovered.push(await recoverPlan(plan));
       }
-      if (current.content_type === "Note") await writableNote(current.uuid);
-      if (plan.change.kind === "tag_attach" || plan.change.kind === "tag_detach") {
-        await writableNote(plan.change.noteUuid);
-      }
-      if (!plan.before) {
-        if (current.content_type !== "Note") throw new Error("Tag creation cannot be undone safely");
-        return this.prepareChange({ kind: "note_trash", uuid: current.uuid, revision: await itemRevision(current) });
-      }
-      if (plan.before.deleted || plan.before.uuid !== current.uuid ||
-          plan.before.content_type !== current.content_type) throw new Error("Invalid recovery source");
-      const after = { ...current, content: plan.before.content, enc_item_key: plan.before.enc_item_key,
-        items_key_id: plan.before.items_key_id };
-      if (current.content_type === "Tag") await writableTagTargets(current, after);
-      return {
-        change: { kind: "recovery", uuid: current.uuid, revision: await itemRevision(current) },
-        before: { ...current },
-        after,
-        preview: await reviewPreview("recovery", current, after),
-      };
+      if (recovered.length === 0) throw new Error("Nothing to undo: no item of this batch was applied, or only tags were created");
+      return { plans: recovered, preview: batchPreview(recovered, noteTitle), skipped };
     },
 
     async prepareChange(change) {
       if (change.kind === "recovery") throw new Error("Recovery is internal; use prepareRecovery");
       await fullSync(state);
-      const now = new Date().toISOString();
-      const creating = change.kind === "note_create" || change.kind === "tag_create";
-      if (creating) {
-        const uuid = crypto.randomUUID();
-        const key = defaultItemsKey();
-        const note = change.kind === "note_create";
-        if (note && change.noteType !== undefined &&
-            change.noteType !== "plain-text" && change.noteType !== "markdown") {
-          throw new Error("Only plain-text and markdown note creation is supported");
-        }
-        if (change.kind === "note_create" && Buffer.byteLength(change.text, "utf8") > 10 * 1024 * 1024) {
-          throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
-        }
-        const encrypted = change.kind === "note_create"
-          ? await encryptNote({ uuid, title: change.title, text: change.text,
-              noteType: change.noteType ?? "plain-text" }, key)
-          : await encryptTag({ uuid, title: change.title, references: [] }, key);
-        const after: http.RawItem = { uuid, content_type: note ? "Note" : "Tag", ...encrypted,
-          created_at: now, updated_at: now, created_at_timestamp: 0,
-          updated_at_timestamp: 0, deleted: false };
-        return {
-          change: { ...change },
-          before: null,
-          after,
-          preview: await reviewPreview(change.kind, null, after),
-        };
+      const [plan] = await planChanges([change]);
+      return plan!;
+    },
+
+    async prepareChanges(changes) {
+      await fullSync(state);
+      const plans = await planChanges(changes);
+      return { plans, preview: batchPreview(plans, noteTitle) };
+    },
+
+    async getNotesWithRevision(uuids) {
+      await fullSync(state);
+      const notes: Array<Note & { revision: string }> = [];
+      const missing: string[] = [];
+      for (const uuid of uuids) {
+        const raw = state.encryptedItemsRaw.get(uuid);
+        if (!raw || raw.deleted || raw.content_type !== "Note") { missing.push(uuid); continue; }
+        const note = toFullNote(await decryptNote(raw, readKeys()), state.tagsCache);
+        // Protected notes stay with the official app, as in notes_get.
+        if (note.protected) { missing.push(uuid); continue; }
+        notes.push({ ...note, revision: await itemRevision(raw) });
       }
-      // The union's create variants have returned above.
-      if (!("uuid" in change)) throw new Error("Invalid change");
-      const raw = state.encryptedItemsRaw.get(change.uuid);
-      const expectedType = change.kind.startsWith("note_") ? "Note" : "Tag";
-      if (!raw || raw.deleted || raw.content_type !== expectedType) {
-        throw new Error(`Item ${change.uuid} not found or has wrong type`);
-      }
-      if (await itemRevision(raw) !== change.revision) {
-        throw new Error("Stale revision; reconcile before retry");
-      }
-      if (expectedType === "Note") await writableNote(raw.uuid);
-      if (change.kind === "tag_attach" || change.kind === "tag_detach") {
-        await writableNote(change.noteUuid);
-      }
-      const content = await decryptItemContent(raw, contentKeys());
-      switch (change.kind) {
-        case "note_update": {
-          if (change.text !== undefined && change.append !== undefined) {
-            throw new Error("Specify text or append, not both");
-          }
-          if (change.text !== undefined || change.append !== undefined) {
-            const type = content.noteType ?? "plain-text";
-            const editor = content.editorIdentifier;
-            if ((type !== "plain-text" && type !== "markdown") ||
-                (editor !== undefined && editor !== "org.standardnotes.advanced-markdown-editor") ||
-                (content.text !== undefined && typeof content.text !== "string")) {
-              throw new Error("Body edits require a known plain-text or markdown note");
-            }
-            const nextText = change.text ?? ((content.text as string | undefined) ?? "") + change.append;
-            if (Buffer.byteLength(nextText, "utf8") > 10 * 1024 * 1024) {
-              throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
-            }
-            content.text = nextText;
-            content.preview_plain = nextText.slice(0, 160);
-            // These are known text derivatives, not opaque application metadata.
-            delete content.preview_html;
-          }
-          if (change.title !== undefined) content.title = change.title;
-          break;
-        }
-        case "note_trash": content.trashed = true; break;
-        case "note_restore": content.trashed = false; break;
-        case "tag_update": content.title = change.title; break;
-        case "tag_attach":
-        case "tag_detach": {
-          if (content.references !== undefined && !Array.isArray(content.references)) {
-            throw new Error("Malformed tag references");
-          }
-          const refs = (content.references ?? []) as unknown[];
-          const matches = (ref: unknown) => ref !== null && typeof ref === "object" &&
-            (ref as Record<string, unknown>).uuid === change.noteUuid &&
-            (ref as Record<string, unknown>).content_type === "Note";
-          content.references = change.kind === "tag_detach"
-            ? refs.filter((ref) => !matches(ref))
-            : refs.some(matches) ? refs : [...refs, { uuid: change.noteUuid, content_type: "Note" }];
-          break;
-        }
-        default: throw new Error("Unsupported change");
-      }
-      const appData = content.appData === undefined ? {} : objectMap(content.appData);
-      const domain = appData["org.standardnotes.sn"] === undefined
-        ? {} : objectMap(appData["org.standardnotes.sn"]);
-      content.appData = { ...appData, "org.standardnotes.sn": { ...domain, client_updated_at: now } };
-      const after = {
-        ...raw,
-        ...await rewriteItemContent(raw, content, contentKeys(), defaultItemsKey()),
-        updated_at: now,
-      };
-      return {
-        change: { ...change },
-        before: { ...raw },
-        after,
-        preview: await reviewPreview(change.kind, raw, after),
-      };
+      return { notes, missing };
     },
 
     async commitChange(plan, options) {
@@ -998,6 +1091,57 @@ function buildClient(state: ClientState): SnClient {
       } catch {
         throw new Error("Write outcome uncertain or conflicted; reconcile before retry. No automatic retry.");
       }
+    },
+
+    async commitChanges(plans, options) {
+      const uuids = new Set<string>();
+      for (const { before, after } of plans) {
+        if (after.deleted !== false || !["Note", "Tag"].includes(after.content_type) ||
+            !after.content.startsWith("004:") || !after.enc_item_key.startsWith("004:") ||
+            (before && (before.uuid !== after.uuid || before.content_type !== after.content_type || before.deleted))) {
+          throw new Error("Invalid prepared change; permanent deletion is disabled");
+        }
+        if (uuids.has(after.uuid)) throw new Error("A batch may write each item only once");
+        uuids.add(after.uuid);
+      }
+      const landed = () => plans.filter(({ after }) => {
+        const current = state.encryptedItemsRaw.get(after.uuid);
+        return current !== undefined && sameCiphertext(current, after);
+      }).map(({ after }) => after.uuid);
+      const outcome = () => {
+        const confirmed = landed();
+        return { confirmed, unconfirmed: [...uuids].filter((uuid) => !confirmed.includes(uuid)) };
+      };
+      await fullSync(state);
+      const done = new Set(landed());
+      const pending = plans.filter(({ after }) => !done.has(after.uuid));
+      if (options?.reconcileOnly || pending.length === 0) return outcome();
+      // All-or-nothing preflight: one stale or protected item means nothing is sent.
+      for (const { before, after, change } of pending) {
+        const current = state.encryptedItemsRaw.get(after.uuid);
+        if (before ? !current || !sameCiphertext(current, before) ||
+            await itemRevision(current) !== await itemRevision(before) : current !== undefined) {
+          throw new Error(`Conflict on ${after.uuid}: expected item changed, disappeared, or UUID collided; nothing was sent`);
+        }
+        if (before?.content_type === "Note") await writableNote(before.uuid);
+        if (change.kind === "tag_attach" || change.kind === "tag_detach") await writableNote(change.noteUuid);
+        if (before?.content_type === "Tag") await writableTagTargets(before, after);
+        await decryptItemContent(after, contentKeys());
+      }
+      options?.signal?.throwIfAborted();
+      try {
+        for (let i = 0; i < pending.length; i += BATCH_PUSH) {
+          options?.signal?.throwIfAborted();
+          const res = await pushItems(pending.slice(i, i + BATCH_PUSH).map(({ after }) => after));
+          // A conflict means someone else is writing; send nothing further.
+          if (res.conflicts.length > 0) break;
+        }
+      } catch {
+        // Stop sending; the readback below decides what landed. No automatic retry.
+      }
+      // Fetch from a null token, not from our just-written local cache.
+      await fullSync(state, true);
+      return outcome();
     },
 
     async listNotes({ limit, offset, includeTrashed, tag, includeDescendants }) {

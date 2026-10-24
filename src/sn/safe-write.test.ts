@@ -409,3 +409,166 @@ describe("bounded safe writes", () => {
     await expect(client.prepareRecovery(tag)).rejects.toThrow(/cannot be undone/);
   });
 });
+
+describe("batch writes", () => {
+  const note2 = "55555555-5555-4555-8555-555555555555";
+  const note3 = "66666666-6666-4666-8666-666666666666";
+  const syncs = () => mocks.sync.mock.calls.length;
+  beforeEach(async () => {
+    await put(note2, "Note", { title: "Second", text: "Two", noteType: "plain-text" });
+    await put(note3, "Note", { title: "Third", text: "Three", noteType: "plain-text" });
+    client = await createClientFromSession(config);
+    mocks.sync.mockClear();
+  });
+
+  it("composes many changes into one write per item, with one sync to prepare and one push to commit", async () => {
+    const tagRev = await revision(tagUuid);
+    const { plans, preview } = await client.prepareChanges([
+      { kind: "tag_attach", uuid: tagUuid, revision: tagRev, noteUuid },
+      { kind: "note_update", uuid: note2, revision: await revision(note2), title: "Renamed", append: " more" },
+      { kind: "tag_attach", uuid: tagUuid, revision: tagRev, noteUuid: note2 },
+      { kind: "note_trash", uuid: note3, revision: await revision(note3) },
+      { kind: "note_create", title: "Fresh", text: "New body" },
+    ]);
+    expect(syncs()).toBe(1);
+    expect(plans.map((p) => p.after.uuid).slice(0, 3)).toEqual([tagUuid, note2, note3]);
+    expect(plans[0]!.changes).toHaveLength(2);
+    expect(preview).toMatchObject({ kind: "batch", items: 4, counts: { tag_attach: 2, note_update: 1, note_trash: 1, note_create: 1 } });
+    expect(preview.plan[0]!.changes.references).toEqual({ added: [
+      { uuid: noteUuid, type: "Note", title: "Original" }, { uuid: note2, type: "Note", title: "Second" }], removed: [] });
+    expect(preview.plan[1]!.changes).toEqual({ title: { from: "Second", to: "Renamed" }, text: { from: "Two", to: "Two more" } });
+    expect(preview.plan[2]!.changes).toEqual({ trashed: { from: null, to: true } });
+    expect(preview.plan[3]).toMatchObject({ created: true, title: "Fresh" });
+
+    mocks.sync.mockClear();
+    expect(await client.commitChanges(plans)).toEqual({ confirmed: plans.map((p) => p.after.uuid), unconfirmed: [] });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toHaveLength(4);
+    expect(syncs()).toBe(3);
+    const tag = await decryptItemContent(server.get(tagUuid)!, keys);
+    expect((tag.references as Array<{ uuid: string }>).map((r) => r.uuid)).toEqual([noteUuid, note2]);
+    expect(await decryptItemContent(server.get(note2)!, keys)).toMatchObject({ title: "Renamed", text: "Two more" });
+    expect(await decryptItemContent(server.get(note3)!, keys)).toMatchObject({ trashed: true, text: "Three" });
+  });
+
+  it("refuses mixed revisions, protected notes, recovery and duplicate items before any send", async () => {
+    const old = await revision(note2);
+    await edit(note2, { text: "changed elsewhere" });
+    await expect(client.prepareChanges([{ kind: "note_trash", uuid: note2, revision: old }])).rejects.toThrow(/Stale/);
+    await expect(client.prepareChanges([
+      { kind: "note_update", uuid: note3, revision: await revision(note3), title: "a" },
+      { kind: "note_trash", uuid: note3, revision: old },
+    ])).rejects.toThrow(/Stale/);
+    await edit(note3, { protected: true });
+    await expect(client.prepareChanges([{ kind: "tag_attach", uuid: tagUuid, revision: await revision(tagUuid), noteUuid: note3 }])).rejects.toThrow(/protected or locked/);
+    await expect(client.prepareChanges([{ kind: "recovery", uuid: noteUuid, revision: await revision() }])).rejects.toThrow(/internal/);
+    const { plans } = await client.prepareChanges([{ kind: "note_trash", uuid: noteUuid, revision: await revision() }]);
+    await expect(client.commitChanges([plans[0]!, plans[0]!])).rejects.toThrow(/only once/);
+    expect(writes).toHaveLength(0);
+  });
+
+  it("sends nothing when any one item changed after preview", async () => {
+    const { plans } = await client.prepareChanges([
+      { kind: "note_trash", uuid: noteUuid, revision: await revision() },
+      { kind: "note_trash", uuid: note2, revision: await revision(note2) },
+    ]);
+    await edit(note2, { title: "edited on phone" });
+    await expect(client.commitChanges(plans)).rejects.toThrow(/Conflict on 5555.*nothing was sent/);
+    expect(writes).toHaveLength(0);
+  });
+
+  it("sends nothing when a batch is cancelled during read-only preflight", async () => {
+    const { plans } = await client.prepareChanges([{ kind: "note_trash", uuid: note2, revision: await revision(note2) }]);
+    const controller = new AbortController();
+    const base = mocks.sync.getMockImplementation()!;
+    let release!: () => void, entered!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    mocks.sync.mockImplementationOnce(async (...args: unknown[]) => { entered(); await paused; return base(...args); });
+    const pending = client.commitChanges(plans, { signal: controller.signal });
+    const rejected = expect(pending).rejects.toThrow();
+    await started; controller.abort(); release();
+    await rejected;
+    expect(writes).toHaveLength(0);
+  });
+
+  it("reports partly saved batches item by item and never resends when reconciling", async () => {
+    const { plans } = await client.prepareChanges([
+      { kind: "note_trash", uuid: noteUuid, revision: await revision() },
+      { kind: "note_trash", uuid: note2, revision: await revision(note2) },
+    ]);
+    const base = mocks.sync.getMockImplementation()!;
+    mocks.sync.mockImplementation(async (cfg: unknown, params: { items?: RawItem[] }) =>
+      base(cfg, params.items ? { ...params, items: params.items.filter((i) => i.uuid !== note2) } : params));
+    expect(await client.commitChanges(plans)).toEqual({ confirmed: [noteUuid], unconfirmed: [note2] });
+    expect(writes).toHaveLength(1);
+    mocks.sync.mockImplementation(base);
+    expect(await client.commitChanges(plans, { reconcileOnly: true })).toEqual({ confirmed: [noteUuid], unconfirmed: [note2] });
+    expect(writes).toHaveLength(1);
+  });
+
+  it("stops sending further chunks after a server conflict or cancellation", async () => {
+    const creates = Array.from({ length: 60 }, (_, i) => ({ kind: "note_create" as const, title: `N${i}`, text: "x" }));
+    const first = await client.prepareChanges(creates);
+    failure = "conflict";
+    expect((await client.commitChanges(first.plans)).confirmed).toEqual([]);
+    expect(writes).toHaveLength(1);
+    failure = undefined;
+    const second = await client.prepareChanges(creates);
+    const controller = new AbortController();
+    const base = mocks.sync.getMockImplementation()!;
+    mocks.sync.mockImplementation(async (cfg: unknown, params: { items?: RawItem[] }) => {
+      const res = await base(cfg, params);
+      if (params.items?.length) controller.abort();
+      return res;
+    });
+    const outcome = await client.commitChanges(second.plans, { signal: controller.signal });
+    expect(writes).toHaveLength(2);
+    expect([outcome.confirmed.length, outcome.unconfirmed.length]).toEqual([50, 10]);
+  });
+
+  it("undoes only the applied items of a partly saved batch and keeps created tags", async () => {
+    const { plans } = await client.prepareChanges([
+      { kind: "note_trash", uuid: noteUuid, revision: await revision() },
+      { kind: "note_trash", uuid: note2, revision: await revision(note2) },
+      { kind: "tag_create", title: "New tag" },
+    ]);
+    const base = mocks.sync.getMockImplementation()!;
+    mocks.sync.mockImplementation(async (cfg: unknown, params: { items?: RawItem[] }) =>
+      base(cfg, params.items ? { ...params, items: params.items.filter((i) => i.uuid !== note2) } : params));
+    expect((await client.commitChanges(plans)).unconfirmed).toEqual([note2]);
+    mocks.sync.mockImplementation(base);
+    await expect(client.prepareRecoveries(plans)).rejects.toThrow(/Recovery conflict/);
+    const undo = await client.prepareRecoveries(plans, { appliedOnly: true });
+    expect(undo.plans.map((p) => p.after.uuid)).toEqual([noteUuid]);
+    expect(undo.skipped).toEqual([{ uuid: note2, reason: "not_applied" }, { uuid: plans[2]!.after.uuid, reason: "tag_create" }]);
+    // Never-applied is an exact state; a later outside edit is a conflict, not a skip.
+    await edit(note2, { title: "Edited elsewhere" });
+    await expect(client.prepareRecoveries([plans[1]!], { appliedOnly: true })).rejects.toThrow(/Recovery conflict/);
+  });
+
+  it("undoes a committed batch as one batch: edits restored, created notes trashed", async () => {
+    const { plans } = await client.prepareChanges([
+      { kind: "note_update", uuid: noteUuid, revision: await revision(), text: "Rewritten" },
+      { kind: "note_create", title: "Temp", text: "x" },
+    ]);
+    await client.commitChanges(plans);
+    mocks.sync.mockClear();
+    const undo = await client.prepareRecoveries(plans);
+    expect(syncs()).toBe(1);
+    expect(undo.preview.counts).toEqual({ recovery: 1, note_trash: 1 });
+    expect((await client.commitChanges(undo.plans)).unconfirmed).toEqual([]);
+    expect(await decryptItemContent(server.get(noteUuid)!, keys)).toMatchObject({ text: "Body" });
+    expect(await decryptItemContent(server.get(plans[1]!.after.uuid)!, keys)).toMatchObject({ trashed: true });
+  });
+
+  it("reads many notes with revisions from one sync and withholds protected notes", async () => {
+    await edit(note3, { protected: true });
+    mocks.sync.mockClear();
+    const missingUuid = "77777777-7777-4777-8777-777777777777";
+    const { notes, missing } = await client.getNotesWithRevision([noteUuid, note2, note3, missingUuid]);
+    expect(syncs()).toBe(1);
+    expect(notes.map((n) => [n.uuid, n.revision])).toEqual([[noteUuid, await revision()], [note2, await revision(note2)]]);
+    expect(missing).toEqual([note3, missingUuid]);
+  });
+});

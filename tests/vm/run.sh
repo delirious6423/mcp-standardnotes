@@ -11,6 +11,11 @@ if [[ "${SN_VM_RUNNER_FROZEN:-0}" != 1 ]]; then
 fi
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOTFILES="${DOTFILES:-$HOME/code/dotfiles}"
+# Evidence goes to the machine's data volume when dotfiles define one (same lookup as bin/standardnotes-mcp).
+if [[ -z "${DATA_DIR:-}" && -f "$DOTFILES/machines/$(hostname).env" ]]; then
+  # shellcheck source=/dev/null
+  . "$DOTFILES/machines/$(hostname).env"
+fi
 # shellcheck source=/dev/null
 . "$DOTFILES/lib/incus-vm.sh"
 cleanup() {
@@ -19,9 +24,14 @@ cleanup() {
     incus_vm_owned || { echo "Refusing evidence/cleanup for an unowned VM" >&2; exit 1; }
   fi
   if [[ -n "$INCUS_VM" && "${SN_GUI_TEST:-0}" == 1 ]]; then
-    evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM"
+    # Warm slot names repeat; a per-run directory keeps old frames from posing as this run's.
+    evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM-$(date +%Y%m%dT%H%M%S)"
     mkdir -p "$evidence"
-    timeout 20 "${INCUS[@]}" file pull -r "$INCUS_VM/tmp/sn-gui-test" "$evidence" >/dev/null 2>&1 || true
+    if timeout 60 "${INCUS[@]}" file pull -r "$INCUS_VM/tmp/sn-gui-test" "$evidence" >/dev/null 2>&1; then
+      echo "GUI evidence: $evidence"
+    else
+      echo "GUI evidence pull failed: $evidence" >&2
+    fi
   fi
   if [[ "$rc" != 0 && -n "$INCUS_VM" ]]; then
     evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM"
