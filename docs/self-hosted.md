@@ -1,60 +1,42 @@
-# Using mcp-standardnotes with a self-hosted Standard Notes server
+# Using a self-hosted Standard Notes server
 
-You can point this MCP server at any Standard Notes server you control — your own [`standardnotes/server`](https://github.com/standardnotes/server) instance, a homelab deployment, or a company-internal mirror.
+You can point this server at any Standard Notes sync server you run, such as your own
+[`standardnotes/server`](https://github.com/standardnotes/server) deployment. See the
+[official self-hosting guide](https://standardnotes.com/help/47/can-i-self-host-standard-notes) to set one up.
+The server must be reachable over **HTTPS**; plain HTTP is refused (it is allowed only for loopback test
+servers with `SN_ALLOW_LOCAL_TEST_SERVER=1`).
 
-## Bring up a Standard Notes server with docker-compose
+## 1. Create the account
 
-The fastest way is the upstream recipe.
+Register against your server URL in the official Standard Notes app. New accounts use protocol 004.
 
-```bash
-git clone https://github.com/standardnotes/server.git
-cd server
-cp .env.sample .env
-# Edit .env: pick strong values for SECRET_KEY_BASE, JWT_SECRET, AUTH_JWT_SECRET, etc.
-docker compose up -d
-```
-
-By default the API is exposed on `http://localhost:3000`. For production you want it behind TLS — typically Caddy or nginx with Let's Encrypt sitting in front of the docker network.
-
-See the [official self-hosting docs](https://standardnotes.com/help/47/can-i-self-host-standard-notes) for the full walkthrough, including the Files server (optional) and a web client.
-
-## Point this MCP at it
-
-### 1. Create your account
-
-Use the official Standard Notes app (web or desktop) and register against your server URL. Make sure you end up on protocol 004 — it's the default for new accounts since 2020.
-
-### 2. Configure mcp-standardnotes
-
-Pass `SN_SERVER_URL` when running the login and the server:
+## 2. Sign in and configure
 
 ```bash
-SN_SERVER_URL=https://sn.example.com SN_EMAIL=you@example.com npm run login
+SN_SERVER_URL=https://sn.example.com bin/standardnotes-mcp login
 ```
 
-Then in your Claude config:
+Then give the MCP server the same URL:
 
 ```json
 {
   "mcpServers": {
-    "mcp-standardnotes": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-standardnotes/dist/index.js"],
-      "env": {
-        "SN_EMAIL": "you@example.com",
-        "SN_SERVER_URL": "https://sn.example.com"
-      }
+    "standardnotes": {
+      "command": "/absolute/path/to/checkout/bin/standardnotes-mcp",
+      "args": ["serve"],
+      "env": { "SN_SERVER_URL": "https://sn.example.com" }
     }
   }
 }
 ```
 
-### 3. Pin the TLS certificate (recommended)
+Run `approve`, `logout` and `unlock` with the same `SN_SERVER_URL`. Use the URL without a trailing slash,
+query or credentials.
 
-For self-hosted servers — especially homelab setups with self-signed or short-lived certs — set `SN_CERT_FINGERPRINT` to the SHA-256 fingerprint of the server's leaf certificate. The MCP will refuse to talk to any other certificate, even if a CA in your trust store would otherwise vouch for it.
+## 3. Pin the TLS certificate (recommended)
 
-Get the fingerprint from your server:
+Set `SN_CERT_FINGERPRINT` to the SHA-256 fingerprint of the server's leaf certificate; the connector then
+refuses any other certificate, even one your trust store accepts:
 
 ```bash
 echo | openssl s_client -connect sn.example.com:443 -servername sn.example.com 2>/dev/null \
@@ -62,54 +44,27 @@ echo | openssl s_client -connect sn.example.com:443 -servername sn.example.com 2
   | sed 's/^.*=//; s/://g; y/ABCDEF/abcdef/'
 ```
 
-Output looks like `7a3c9b...` (64 hex chars). Set it in your env:
+Put the 64-hex-character result in both the login command's environment and the MCP server's `env`.
+Repeat after every certificate renewal.
 
-```bash
-SN_CERT_FINGERPRINT=7a3c9b... SN_SERVER_URL=https://sn.example.com npm run login
-```
+## Several accounts
 
-And mirror it into your Claude config's `env` block. Re-run the fingerprint extraction after every cert renewal.
-
-## Account / users-per-server
-
-Each MCP instance is single-account. If you host multiple users on the same SN server, run one `mcp-standardnotes` per user (one Claude config entry each, distinct `KEYCHAIN_SERVICE` values to avoid keychain collisions).
-
-```json
-{
-  "mcpServers": {
-    "alice-notes": {
-      "command": "node",
-      "args": ["/path/to/mcp-standardnotes/dist/index.js"],
-      "env": {
-        "SN_EMAIL": "alice@example.com",
-        "SN_SERVER_URL": "https://sn.example.com",
-        "KEYCHAIN_SERVICE": "mcp-sn-alice"
-      }
-    },
-    "bob-notes": {
-      "command": "node",
-      "args": ["/path/to/mcp-standardnotes/dist/index.js"],
-      "env": {
-        "SN_EMAIL": "bob@example.com",
-        "SN_SERVER_URL": "https://sn.example.com",
-        "KEYCHAIN_SERVICE": "mcp-sn-bob"
-      }
-    }
-  }
-}
-```
+Each server process serves one account. Run one MCP server entry per account, each with its own
+`SN_EMAIL` (and `SN_SERVER_URL` if they differ). Their encrypted journals live in separate per-account
+directories under the state directory automatically.
 
 ## Operational notes
 
-- **Backups.** This MCP keeps no state of its own beyond the keychain entry — backups are 100% your SN server's job. Use the upstream backup recipe.
-- **Rate limiting.** Self-hosted servers usually have looser limits than the cloud, but the MCP still respects 429 responses.
-- **Files server.** Not yet supported — this MCP only handles notes and tags. File uploads/downloads remain in the official app.
-- **CI against your server.** Don't. Run integration tests against an ephemeral docker-compose instance only.
+- **State.** Besides the keychain entries, the connector keeps an encrypted operation and recovery journal
+  in its state directory (see the README's configuration table). Note backups remain your server's job.
+- **Rate limiting.** The connector honours HTTP 429 and `Retry-After` for every process of the account.
+- **Files.** Attachments are not supported; this server handles notes and tags only.
+- **Testing.** Never point tests at a server holding real notes; the VM gates use a synthetic server.
 
-## Troubleshooting
+## If login fails
 
-If you can log in via the official SN app but `npm run login` fails, the most common causes are:
-
-- `SN_SERVER_URL` includes a trailing slash or wrong scheme — drop the slash, use `https://`.
-- TLS cert is invalid (expired, wrong hostname, untrusted CA): fix it at the server, or pin with `SN_CERT_FINGERPRINT` if it's intentional self-signed.
-- Account is on legacy protocol 003: upgrade via the SN app (Preferences → Security → Upgrade Encryption).
+- Wrong scheme or extra characters in `SN_SERVER_URL`: use `https://host` with no trailing slash.
+- Invalid certificate (expired, wrong host, untrusted CA): fix it on the server, or pin it with
+  `SN_CERT_FINGERPRINT` if it is intentionally self-signed.
+- Wrong password, or an account that was never upgraded to protocol 004: check the password, then upgrade
+  the encryption in the official app (Preferences → Security).

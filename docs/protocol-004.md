@@ -8,7 +8,7 @@ This document explains what parts of the protocol this server implements locally
 - **Your master key** is derived locally and stays on your machine. It's stored (hex-encoded) in the OS keychain alongside the session token — never in a plaintext file.
 - **All note content** is decrypted *locally*. The server only ever sees ciphertext.
 - **Transport is stdio only.** This process opens no network port. If a future maintainer proposes adding an HTTP transport, the answer is no — `CLAUDE.md` documents why.
-- **Destructive ops require explicit flags.** `notes_delete { permanent: true }` is not a default.
+- **No write without the user.** Agents only prepare previews; the user approves each one in a terminal, and every committed write can be undone. Nothing deletes permanently.
 - **All tool inputs are validated by `zod`** (UUID format, 10 MB max content length, etc.).
 - **All logs are routed through `src/security/redact.ts`** which masks passwords, master keys, items_keys, JWTs, and any string that looks like a long token. Stdout is reserved for the MCP protocol; logs go to stderr.
 - **Dependencies** are monitored: `npm audit` HIGH/CRITICAL is a merge blocker in CI.
@@ -44,44 +44,18 @@ At login: `Argon2id(password, salt = sha256(email:pw_nonce)[:16], ops=5, mem=64M
 ## Tag hierarchy (folders) on the wire
 
 Nested tags aren't a separate object type in SN. The parent link is a
-`content.references[]` entry stored on the **child** tag:
+`content.references[]` entry stored on the **child** tag, written exactly as the
+official app writes it (TagMutator `makeChildOf`):
 
 ```json
 {
   "uuid": "<parent-tag-uuid>",
-  "content_type": "SN|Tag",
+  "content_type": "Tag",
   "reference_type": "TagToParentTag"
 }
 ```
 
-A tag has at most one parent (`SNTag.parentId` returns the first
-`TagToParentTag` reference — see [`app/packages/models/.../Tag.ts`](https://github.com/standardnotes/app/blob/main/packages/models/src/Domain/Syncable/Tag/Tag.ts)). Older payloads
-predating `reference_type` used a bare `{ uuid, content_type: "SN|Tag" }`;
-that legacy shape only ever meant "parent of", so we accept it on reads.
-On writes we always emit the modern `reference_type: "TagToParentTag"`
-form. Handling of both shapes lives in [`src/sn/tagHierarchy.ts`](../src/sn/tagHierarchy.ts).
-
-## Deliberately out of scope
-
-- **Reimplementing any cryptographic primitive.** All primitives come from `libsodium-wrappers-sumo`. We only parse/serialize the protocol 004 framing.
-- **Legacy protocol 003** accounts. Rejected at login with a clear error. Upgrade via the official Standard Notes app.
-- **Network transport** for the MCP server (HTTP/WebSocket/etc.). stdio only. Users wanting mobile access should keep using the official Standard Notes app.
-
-## References
-
-- Standard Notes [encryption whitepaper](https://standardnotes.com/help/security/encryption)
-- SNJS [specification](https://github.com/standardnotes/snjs/blob/main/packages/snjs/specification.md)
-- Source: [`src/sn/protocol004.ts`](../src/sn/protocol004.ts)
-
-## Legacy protocol 003 items
-
-Accounts upgraded from protocol 003 can still hold 003 notes and tags. They are encrypted under 003 items keys
-(AES-256-CBC, HMAC-SHA256 checked before decrypting) that sit in the vault wrapped under the 004 root key, so
-no password is needed. `src/sn/protocol003.ts` uses Node's built-in `crypto` for this; it never derives keys.
-
-- Legacy items are readable and editable. An edit rewrites the item as 004 under the current default 004 items key
-  and preserves the full decrypted content map. A 003 key can never become the default key.
-- The MAC covers the uuid written inside the ciphertext. By default it must equal the server's uuid, which stops a
-  server moving valid ciphertext onto another item. A few old items (2018 clients) do not match.
-  `SN_ALLOW_LEGACY_UUID_MISMATCH=1` makes them readable, flagged `legacyUuidMismatch`, and still never writable.
-- An optional 6th payload segment (account params) is not authenticated: it is ignored and never logged.
+The app recognises a parent link by `reference_type` alone
+(`isTagToParentTagReference` in the `packages/models` package of [standardnotes/app](https://github.com/standardnotes/app)),
+and a tag has at most one parent. References without a `reference_type` are not
+parent links; this server preserves them untouched.

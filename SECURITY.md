@@ -19,63 +19,37 @@ unless you ask otherwise.
 
 ## Supported versions
 
-Only the latest published `0.3.x` release receives security fixes. There is no
-back-porting to older lines while the project is pre-1.0.
-
-| Version | Supported |
-|---------|-----------|
-| latest `0.3.x` | ✅ |
-| older | ❌ |
+Only the latest commit on `main` receives security fixes. The package is not published to npm; install
+from a checkout and update with `git pull`.
 
 ## Security posture
 
-- **End-to-end encryption is preserved.** All cryptographic primitives come
-  from `libsodium-wrappers-sumo` (audited Argon2id + XChaCha20-Poly1305 IETF).
-  Only the Standard Notes protocol 004 *framing* is implemented locally — no
-  hand-rolled crypto. See [docs/protocol-004.md](./docs/protocol-004.md) for the
-  threat model.
-- **The password lives in RAM only**, during key derivation. It is never
-  logged, never written to disk, never stored in an environment variable.
-- **Secrets go to the OS keychain only** (`keytar` → macOS Keychain / Linux
-  libsecret / Windows Credential Vault). The session token and master-key hex
-  are never written to plaintext files.
-- **stdio transport only.** The server opens no network port and accepts no
-  remote connections. The only outbound traffic is to the configured Standard
-  Notes sync endpoint.
-- **Logs are redacted.** Everything is written to stderr through
-  `src/security/redact.ts`, which masks passwords, keys, JWTs, and any
-  token-like string.
-- **All tool inputs are validated by `zod`** (strict UUIDs, content-size caps),
-  and `notes_delete` requires an explicit flag for a permanent purge.
-- **TLS verification is never disabled**; self-hosted servers can additionally
-  be pinned with `SN_CERT_FINGERPRINT`.
+- **End-to-end encryption is preserved.** Cryptographic primitives come from `libsodium-wrappers-sumo`
+  (Argon2id, XChaCha20-Poly1305 IETF); reading legacy protocol 003 items uses `node:crypto` AES-256-CBC
+  with HMAC-SHA256 verification. Only protocol framing is implemented here — no hand-rolled crypto. See
+  [docs/protocol-004.md](./docs/protocol-004.md).
+- **The password lives in RAM only**, during key derivation. It is never logged, written to disk or put
+  in an environment variable.
+- **Secrets go to the OS keychain only** (`keytar`: macOS Keychain, Linux Secret Service, Windows
+  Credential Manager). Session tokens, the master key and the journal key are never in plaintext files.
+- **No write without the user.** Agents can only prepare a preview. The user approves that exact preview
+  in their own terminal (`standardnotes-mcp approve ID`); there is no MCP tool that approves. Nothing can
+  permanently delete a note or delete a tag. Every committed operation can be undone from an encrypted
+  journal kept in a private state directory (mode 0700 on POSIX, a user-only ACL on NTFS).
+- **Protected notes stay out.** They are never searched, listed with content or returned; locked notes
+  are never changed.
+- **stdio transport only.** No network port; the only outbound traffic is to the configured sync server.
+- **Logs are redacted** through `src/security/redact.ts` and go to stderr only.
+- **All tool inputs are validated by `zod`** (strict UUIDs, size limits).
+- **TLS verification is never disabled**; self-hosted servers can be pinned with `SN_CERT_FINGERPRINT`.
+
+Approval is not a sandbox: an agent with unrestricted shell access as the same user could run the
+approve command itself. Give agents MCP access, not your shell, when that matters.
 
 ## Dependency advisories
 
-`npm audit` on the published package reports **no HIGH or CRITICAL
-vulnerabilities** — the project's CI treats any HIGH/CRITICAL as a merge
-blocker. A small number of **moderate** advisories may surface in third-party
-scanners; here is the full, honest accounting so the report isn't a mystery:
+`npm audit` reported **0 vulnerabilities** on 2026-10-25 (Linux VM gate). CI fails on any HIGH or
+CRITICAL advisory. The `overrides` in `package.json` pin patched versions of transitive dependencies of
+`@modelcontextprotocol/sdk`; its HTTP/SSE transport code is never loaded, because this server is stdio-only.
 
-- **`express`, `express-rate-limit`, `qs`, `ip-address`, `hono` (moderate).**
-  These are pulled in transitively by `@modelcontextprotocol/sdk` for its
-  **HTTP/SSE server transport**. This project is **stdio-only** and never
-  instantiates that transport, so the affected code is never loaded and there
-  is no exploit path in normal use. They will clear once the upstream SDK
-  drops or optionalises those dependencies; the SDK is already kept at its
-  latest release.
-- **`vitest`, `eslint` and other build tooling.** These are `devDependencies`.
-  They are used only to build and test the project and are **not included in the
-  published npm package** (only `dist/` and docs ship — see the `files` field in
-  `package.json`). They cannot affect an installed copy.
-
-> **Note on `overrides`.** npm only honours a package's `overrides` field for the
-> project where it is the *root*. They do **not** propagate to consumers who
-> install this package as a dependency. The `overrides` in this repo
-> therefore harden our own CI/build tree; they are not a substitute for upstream
-> fixes in the resolved dependency tree of an end user. The real lever for the
-> transitive moderates above is the upstream SDK, which we track.
-
-If you believe one of these *is* reachable in this project's stdio-only usage,
-that is exactly the kind of report we want — please file it privately via the
-link above.
+If you believe an advisory is reachable in stdio-only use, report it privately via the link above.

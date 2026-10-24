@@ -28,10 +28,8 @@ npm test            # vitest run
 npm run audit       # npm audit, fails on HIGH/CRITICAL
 ```
 
-Additional dev CLIs under `src/cli/`:
-
-- `npm run login` — interactive login, stores session in the OS keychain.
-- `npm run logout` — wipe the keychain entry (reads `SN_EMAIL` or `npm run logout -- <email>`).
+Run the built server and CLIs through the launcher: `bin/standardnotes-mcp serve | login | logout |
+approve OPERATION_UUID | unlock --clients-stopped`. Never test writes against a real account; use the VM gates.
 
 ## PR checklist
 
@@ -44,32 +42,16 @@ npm run typecheck && npm run lint && npm test && npm run audit
 Then:
 
 - Keep changes focused. If you find an unrelated bug, open a separate PR.
-- For new MCP tools: add a zod schema, register in `src/server.ts`, add at least one input-validation test.
-- For changes to the sync/write path: verify round-trip against the official Standard Notes app (notes you create/update via MCP must be readable and un-corrupted in the app).
+- For new MCP tools or change kinds: add the zod schema (`src/tools/changes.ts` for writes), register in
+  `src/server.ts`, and add input-validation tests. Writes must stay prepare → terminal approval → commit.
+- For a fix, add a regression test and check that it fails when the fix is removed.
+- For changes to the sync/write path: run `bash tests/vm/run.sh`, and confirm the stored item format against
+  the official Standard Notes app source or a throwaway account.
 - For protocol 004 changes: read [docs/protocol-004.md](./docs/protocol-004.md) first.
 
 ## Project layout
 
-```
-src/
-  index.ts              # MCP stdio entry point
-  server.ts             # McpServer + tool registration
-  cli/
-    login.ts            # `npm run login`
-  sn/
-    client.ts           # Orchestration: login/session → HTTP + protocol
-    crypto.ts           # Thin wrapper over libsodium
-    protocol004.ts      # Framing: root key derivation, items_key decryption, note/tag enc/dec
-    http.ts             # fetch wrapper for /v2/login-params, /v2/login, /v1/items
-    session.ts          # Keychain persistence via keytar
-    types.ts            # Note / NoteSummary / NoteType / Tag / TagSummary
-  tools/
-    notes.ts            # Notes MCP handlers + zod schemas
-    tags.ts             # Tags + sync MCP handlers + zod schemas
-  security/
-    redact.ts           # Redacts secrets from any object before logging
-    logger.ts           # stderr-only logger using redact
-```
+See the structure section of [CLAUDE.md](./CLAUDE.md).
 
 ## Testing
 
@@ -79,7 +61,9 @@ Unit tests live alongside the code they test (`*.test.ts`). Write tests for:
 - Encryption round-trips when touching `protocol004.ts`.
 - Redaction rules when touching `redact.ts`.
 
-Integration tests against a self-hosted Standard Notes server (docker-compose) are welcome. **Never point CI at the production SN server.**
+Integration tests run real stdio MCP clients against a synthetic sync server inside throwaway VMs:
+`tests/vm/run.sh` (Linux), `tests/vm/macos-run.sh` (macOS), `tests/vm/windows-run.sh` (Windows x64).
+**Never point tests or CI at the production Standard Notes server.**
 
 ## Commit style
 
@@ -89,4 +73,5 @@ Integration tests against a self-hosted Standard Notes server (docker-compose) a
 
 ## Releasing
 
-Not yet. This repo is pre-1.0. When we cut a release it'll be `npm publish` + a GitHub release from a tagged commit on `main`.
+The package is private and is not published to npm or the MCP Registry. Install from a checkout
+([README](./README.md#install)); versions are recorded in [CHANGELOG.md](./CHANGELOG.md).

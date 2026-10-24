@@ -1,6 +1,6 @@
-# Shared local Standard Notes MCP
+# Local setup and operation
 
-Fork of lozit/mcp-standardnotes (MIT), branched from upstream `749d4662ca1c4c0183e6086cf1a43f681458ce25`. Not published to npm. No Standard Notes app changes.
+standardnotes-safe-mcp is a fork of lozit/mcp-standardnotes (MIT), branched from upstream `749d4662ca1c4c0183e6086cf1a43f681458ce25`. It is not published to npm and does not change the Standard Notes app.
 
 ## Privacy and access
 
@@ -8,22 +8,22 @@ Fork of lozit/mcp-standardnotes (MIT), branched from upstream `749d4662ca1c4c018
 - All unprotected notes are in scope. Protected notes are masked/refused; edit-locked notes remain readable but cannot be changed or retagged.
 - Standard Notes sync uses its protocol 004 encryption. Keys/sessions live in the OS keychain. Local MCP uses process pipes, not a listening HTTP service.
 - Cloud agents send retrieved note plaintext to their model provider. TLS protects transit, not against that provider. Encrypting content so the provider cannot read it also prevents conventional model inference. Local inference avoids that disclosure (agent logs and remote control channels still matter).
-- Recovery records, including exact before/after previews, are encrypted with a separate 256-bit key in the OS keychain. Files are 0600; account directories 0700. They contain sensitive history once decrypted. No plaintext vault mirror or index is written.
+- Recovery records, including exact before/after previews, are encrypted with a separate 256-bit key in the OS keychain. Files are 0600 and account directories 0700 on POSIX; on NTFS both get a protected ACL with one entry for your user. They contain sensitive history once decrypted. No plaintext vault mirror or index is written.
 - Losing the recovery key makes local records unreadable. Logout removes the login session, not the recovery key. These records are NOT a substitute for a separate full vault backup. No retention/deletion automation is enabled.
 - No telemetry added; connector traffic goes to the configured Standard Notes service. Model traffic is the agent client's responsibility.
 
 ## Installation and login
 
-Requires Node >=22, a working OS Secret Service/Keychain/Credential Vault, and the built pinned dependencies. Do not automatically run an unpinned npx package.
+Requires Node ≥ 22.12, a working OS keychain (Linux Secret Service, macOS Keychain, Windows Credential Manager), and the pinned dependencies (`npm ci`, then `npm run build`). Do not run an unpinned npx package.
 
-Local checkout: `~/code/standardnotes-mcp`. Launcher: `bin/standardnotes-mcp`. Build/testing uses `bash tests/vm/run.sh` in a native Incus Ubuntu 26.04 VM; never run the real connector/installer test suite on the desktop as a test. Shared lifecycle: `~/code/dotfiles/lib/incus-vm.sh`.
+The launcher is `bin/standardnotes-mcp` in your checkout; it follows symlinks, so you can link it into a directory on your `PATH`. Integration tests run in throwaway VMs (`tests/vm/run.sh`, `macos-run.sh`, `windows-run.sh`); do not run them on your desktop.
 
-Set `SN_STATE_DIR` to a private absolute path on your data volume, or `DATA_DIR`. The launcher can read the current machine's `~/code/dotfiles/machines/<hostname>.env`; for example `DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`. No password or email belongs in MCP JSON.
+State: set `SN_STATE_DIR` to a private absolute path, or `DATA_DIR` (`DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`); otherwise the OS state directory is used. If neither is set and `~/code/dotfiles/machines/<hostname>.env` exists, `DATA_DIR` is read from it (the maintainer's machine convention). No password belongs in MCP JSON.
 
 Sign in from your own interactive terminal:
 
 ```bash
-~/code/standardnotes-mcp/bin/standardnotes-mcp login
+bin/standardnotes-mcp login
 ```
 
 The password prompt is masked; 2FA is prompted if needed. Check the displayed account, service and note count against the official app. Never paste credentials or decrypted backups into an agent conversation.
@@ -43,7 +43,7 @@ If you have one saved account, clients discover its email in the keychain. Multi
 }
 ```
 
-For this machine, dotfiles `agents/configure.py` manages the same entry for Pi/Paseo's Pi agents and Claude Code when the launcher exists. Custom/disabled entries are preserved. Other MCP clients use the equivalent entry in their own supported configuration format. Each client starts a stdio process; account-wide filesystem locking serializes calls and fresh clients read keychain token rotation. Overlapping calls fail busy instead of racing; retry read/preparation later. A single installation does not mean all clients share one process.
+Use the equivalent entry in each client's own configuration format. Each client starts a stdio process; account-wide filesystem locking serializes calls and fresh clients read keychain token rotation. Overlapping calls fail busy instead of racing; retry read/preparation later. A single installation does not mean all clients share one process.
 
 ## Tools and writes
 
@@ -61,23 +61,23 @@ Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_get_batch` (up to 
 
 There is no permanent deletion or tag deletion tool. Tags have no reversible trash in Standard Notes, so remove obsolete tags manually in the official app. No cross-format conversion or scheduling is exposed by the safe interface.
 
-## Crash recovery and undo installation
+## Crash recovery and uninstalling
 
 After a killed process, stop ALL connector clients, then:
 
 ```bash
-~/code/standardnotes-mcp/bin/standardnotes-mcp unlock --clients-stopped
+bin/standardnotes-mcp unlock --clients-stopped
 ```
 
 Only after an incomplete lock error, and only with all clients stopped:
 
 ```bash
-~/code/standardnotes-mcp/bin/standardnotes-mcp unlock --clients-stopped --incomplete-lock
+bin/standardnotes-mcp unlock --clients-stopped --incomplete-lock
 ```
 
 Live PID locks are refused. No age-based lock stealing is used. Operation ciphertext is preserved.
 
-To disconnect: disable/remove the `standardnotes` MCP entry in clients and remove/disable its dotfiles source registration (otherwise reconfiguration adds it again), then run `bin/standardnotes-mcp logout` with the same account selection. Do not delete recovery keychain entries or state files unless you explicitly intend to destroy that recovery history. Nothing is installed as a service.
+To disconnect: remove the `standardnotes` MCP entry from your clients (and from any tool that regenerates client configuration), then run `bin/standardnotes-mcp logout` with the same account selection. Do not delete recovery keychain entries or state files unless you explicitly intend to destroy that recovery history. Nothing is installed as a service.
 
 ## Acceptance limits
 

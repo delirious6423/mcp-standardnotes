@@ -163,6 +163,8 @@ Details: [docs/protocol-004.md](docs/protocol-004.md) and [SECURITY.md](SECURITY
   (HTTP 429), every process for that account pauses for the server's `Retry-After` (at most 2 hours)
   and says so instead of retrying. Prefer `notes_get_batch` and `writes_prepare_batch` for bulk work.
 - No tag deletion (by design); remove unwanted tags in the official app.
+- On Windows, each process's first private-file check starts a PowerShell helper (about 2 s), so
+  `approve` takes a few seconds there; later checks in the server take about 1 ms.
 - Structured note types (Super, checklists, spreadsheets) can't have their body rewritten.
 
 Planned work: [PLAN.md](PLAN.md).

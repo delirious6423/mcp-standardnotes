@@ -1,66 +1,76 @@
 # Troubleshooting
 
-### "No session found. Run `npm run login` to authenticate first."
+Commands below use the launcher in a checkout: `bin/standardnotes-mcp …` (or `standardnotes-mcp …` if
+`bin/` is on your `PATH`).
 
-The keychain lookup (`service: mcp-standardnotes`, `account: SN_EMAIL`) found nothing. Make sure `SN_EMAIL` matches the email you used at login **exactly** (case-sensitive on some OSes).
+### "Human approval required: ask the user to run `standardnotes-mcp approve ID` …"
 
-### "Account is not on protocol 004..."
+Expected: the agent prepared a change and you have not approved it yet. Run the command it names in your own
+terminal, read the preview, and type the phrase it asks for (or `reject`). Then let the agent call
+`writes_commit` again. Previews expire after one hour ("Preview expired; prepare a fresh operation").
 
-Legacy 003 accounts are rejected. Upgrade via the official Standard Notes app (Preferences → Security → Upgrade Encryption).
+### "Approval requires your interactive terminal, not piped input"
 
-### Notes created via MCP don't appear in the official SN app
+`approve` refuses piped input on purpose, so an agent cannot approve its own writes by scripting it. Run
+it yourself in a terminal window.
 
-This was a known bug fixed in early 2026: the AAD `kp` field must be omitted for items-key-encrypted notes/tags (it's only included for items_keys encrypted under the root key). If you're on an old revision of this project and see this symptom, update.
+### "No session found" / "Keychain session does not match this account/server"
 
-### Server disconnects immediately in Claude Desktop
+Sign in again with `standardnotes-mcp login`. If several accounts are signed in, set `SN_EMAIL` in the MCP
+server's environment to the one you want (it must match the login email exactly). To switch accounts:
 
-Logs show `SyntaxError: Unexpected token '??='`?
-
-Claude Desktop does not inherit your shell's `nvm` setup — it's resolving `node` to an old version from its own PATH. Use an **absolute path** to a Node ≥ 20 binary in the `command` field:
-
-```json
-{
-  "mcpServers": {
-    "mcp-standardnotes": {
-      "command": "/Users/you/.nvm/versions/node/v22.13.1/bin/node",
-      "args": ["/absolute/path/to/mcp-standardnotes/dist/index.js"],
-      "env": { "SN_EMAIL": "you@example.com" }
-    }
-  }
-}
+```bash
+SN_EMAIL=old@example.com bin/standardnotes-mcp logout
+bin/standardnotes-mcp login
 ```
 
-Then quit Claude Desktop completely (Cmd-Q) and relaunch.
+### "Rate limited by Standard Notes until … No request was sent."
 
-Logs are at `~/Library/Logs/Claude/mcp-server-mcp-standardnotes.log`.
+The server returned HTTP 429. Every server process for the account now waits until the time shown (the
+server's `Retry-After`, at most 2 hours) instead of retrying. Wait it out. For bulk work use
+`notes_get_batch` and `writes_prepare_batch`, which need one sync instead of one per item.
 
-### Rate limited (429) after repeated logins
+### "Operation … was not confirmed" / "Write outcome uncertain …"
 
-Standard Notes caps auth at ~5/min. Wait a minute before retrying. Do **not** retry in a loop.
+The connection dropped or the server's reply did not prove the write landed. Do not prepare a replacement.
+Retry `writes_commit` with the **same** operation ID: it only re-reads and reconciles, and never resends.
+`writes_status` shows which items of a batch are confirmed.
 
-### Sync returns conflicts
+### "Stale revision; reconcile before retry" / "Conflict: expected item changed …"
 
-On create/update, if the server returns conflicts, the MCP throws with the conflict payload instead of silently swallowing. For `notes_update`, the common cause is a stale `updated_at_timestamp` — fetch the note fresh (`notes_get`) and retry.
+The note or tag changed after the agent read it (for example in the official app). Nothing was sent. Have
+the agent read it again and prepare a new change.
+
+### "Account is busy or has an unrecovered lock"
+
+Another MCP process is using the account; retry in a moment. If a process crashed, stop every client that
+uses this server, then run `bin/standardnotes-mcp unlock --clients-stopped`. It refuses while the lock owner
+is still alive.
+
+### "Note … is protected or locked"
+
+Protected notes are never read or changed through MCP, and locked notes are never changed. Edit them in
+the official app.
+
+### "State directory must …" / "Private NTFS operation failed …"
+
+The state directory (`SN_STATE_DIR`, or `$DATA_DIR/standardnotes-mcp`) must be a real directory owned by
+you with mode 0700 (POSIX) or a user-only ACL (Windows NTFS, no junctions or symlinks on the path). Let the
+connector create it. On Windows, a directory created from an Administrator shell is owned by
+Administrators and is refused; remove it and let the connector recreate it.
+
+### Server disconnects immediately in your MCP client
+
+GUI clients do not inherit your shell's `nvm` setup and may find an old `node`. Use the launcher's absolute
+path as the command, and make sure `node` on that client's `PATH` is version 22.12 or newer. The launcher
+prints the reason to stderr if `dist/` or `node_modules/` is missing.
+
+### "No items_key decrypted — likely wrong password or account not on protocol 004"
+
+Check the password at login. If it is right, upgrade the account's encryption in the official Standard Notes app (Preferences → Security). Legacy
+protocol 003 *items* inside an upgraded account are read-only here.
 
 ### keytar fails to install on Linux
 
-`keytar` needs `libsecret` at build time. On Debian/Ubuntu:
-
-```bash
-sudo apt-get install libsecret-1-dev
-```
-
-On Fedora/RHEL:
-
-```bash
-sudo dnf install libsecret-devel
-```
-
-### I want to switch accounts
-
-Wipe the current session from the keychain, then re-login:
-
-```bash
-SN_EMAIL=old@example.com npm run logout
-SN_EMAIL=new@example.com npm run login
-```
+`keytar` needs `libsecret` at build time: `sudo apt-get install libsecret-1-dev` (Debian/Ubuntu) or
+`sudo dnf install libsecret-devel` (Fedora/RHEL).
