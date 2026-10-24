@@ -18,7 +18,7 @@ describe.skipIf(process.platform === "win32")("bin/standardnotes-mcp", () => {
     await mkdir(join(root, "node_modules"));
     await writeFile(join(root, "dist", "index.js"), "");
     const launcher = join(root, "bin", "standardnotes-mcp");
-    await copyFile("bin/standardnotes-mcp", launcher);
+    await copyFile(new URL("../../bin/standardnotes-mcp", import.meta.url), launcher);
     await chmod(launcher, 0o755);
     await mkdir(join(dir, "local", "bin"), { recursive: true });
     await symlink(launcher, join(dir, "local", "bin", "standardnotes-mcp"));

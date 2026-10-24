@@ -112,9 +112,10 @@ describe("install — installDesktop (against a tmpdir)", () => {
 
 describe("isMainModule", () => {
   it("matches when run through an npm-style bin symlink, and not for other or missing paths", async () => {
-    const { symlink } = await import("node:fs/promises");
+    const { realpath, symlink } = await import("node:fs/promises");
     const { pathToFileURL } = await import("node:url");
-    const dir = await mkdtemp(join(tmpdir(), "sn-main-"));
+    // Real path, as Node gives import.meta.url (macOS tmpdir is under the /var -> /private/var link).
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "sn-main-")));
     const real = join(dir, "install.js");
     await writeFile(real, "");
     await symlink(real, join(dir, "bin-link"));

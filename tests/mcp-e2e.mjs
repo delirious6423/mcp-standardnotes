@@ -77,13 +77,12 @@ const clients=[],transports=[];let stderr='';let assertions=0;
 const check=(value,message)=>{assert.ok(value,message);assertions++;};
 const env={...process.env,SN_EMAIL:email,SN_SERVER_URL:endpoint,SN_STATE_DIR:temp,SN_ALLOW_LOCAL_TEST_SERVER:'1',KEYCHAIN_SERVICE:service};
 const parse=(r)=>JSON.parse(r.content.find(x=>x.type==='text').text);
-// The real terminal CLI under a pseudo-terminal where one exists; Windows has no `script`, so it
+// The real terminal CLI under a pseudo-terminal (tests/approve-pty.py); Windows has no pty module, so it
 // approves through the same journal call the CLI makes after its typed confirmation.
 async function approve(operationId,answer=`approve ${operationId}`) {
   const cli=[process.execPath,'dist/cli/approve.js',operationId];
-  const opts={env,input:`${answer}\n`,encoding:'utf8',timeout:15000};
-  const child=process.platform==='linux' ? spawnSync('script',['-q','-e','-c',cli.join(' '),'/dev/null'],opts)
-    : process.platform==='darwin' ? spawnSync('script',['-q','/dev/null',...cli],opts)
+  const opts={env,input:`${answer}\n`,encoding:'utf8',timeout:20000};
+  const child=process.platform!=='win32' ? spawnSync('python3',['-I','tests/approve-pty.py',answer,...cli],opts)
     : spawnSync(process.execPath,['--input-type=module','-e',`
       import path from 'node:path';
       import {accountDirectory,withAccountLock} from './dist/security/account-state.js';
