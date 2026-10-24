@@ -35,7 +35,7 @@ export async function loadSession(
   try {
     return JSON.parse(raw) as StoredSession;
   } catch {
-    throw new Error("Stored session is corrupt; run `npm run login` again.");
+    throw new Error("Stored session is corrupt; run `standardnotes-mcp login` again.");
   }
 }
 

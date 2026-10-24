@@ -1,16 +1,13 @@
-import { execFile } from "node:child_process";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, mkdir, open, rename, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { createLineHelper, type LineHelper } from "./line-helper.js";
 
-const execFileAsync = promisify(execFile);
-
-// Paths are data in the child environment, never PowerShell source. No note data is sent.
+// One PowerShell per process answers requests line by line. Paths arrive as JSON data on stdin,
+// never as PowerShell source, and replies are only "ok" or "fail". No note data is sent.
 const windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$p = $env:SN_PRIVATE_PATH
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 function CheckPath([string]$target) {
   if ($target.StartsWith('\\') -or -not [IO.Path]::IsPathRooted($target)) { throw 'Local absolute path required' }
@@ -41,12 +38,18 @@ function NewSecurity([bool]$directory) {
   $acl.AddAccessRule($rule)
   return $acl
 }
-function CheckAcl([string]$target, [bool]$directory, [bool]$protected) {
+function CheckAcl([string]$target, [bool]$directory, [bool]$protected, [bool]$adminOwnerOk = $false) {
   CheckPath $target
   $attrs = [IO.File]::GetAttributes($target)
   if ((($attrs -band [IO.FileAttributes]::Directory) -ne 0) -ne $directory) { throw 'Wrong file type' }
   $acl = if ($directory) { [IO.Directory]::GetAccessControl($target) } else { [IO.File]::GetAccessControl($target) }
-  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Wrong owner' }
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  # An elevated administrator's new files are owned by Administrators. Allowed only for a file that is
+  # about to be protected, or an unprotected one whose user-only ACL comes from the verified private parent.
+  # Administrators can take ownership of any file anyway, so this grants no one new access.
+  $elevatedNew = $adminOwnerOk -and $owner -eq 'S-1-5-32-544' -and
+    [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  if ($owner -ne $sid.Value -and -not $elevatedNew) { throw 'Wrong owner' }
   if ($protected -and -not $acl.AreAccessRulesProtected) { throw 'Inherited ACL forbidden' }
   # Count raw ACEs too: GetAccessRules must not hide an unsupported/callback allow ACE.
   $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
@@ -61,8 +64,18 @@ function CheckAcl([string]$target, [bool]$directory, [bool]$protected) {
   $inherit = if ($directory) { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
   if ($rule.InheritanceFlags -ne $inherit) { throw 'Unexpected inheritance flags' }
 }
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class PrivateFileMove {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool MoveFileEx(string existing, string destination, uint flags);
+}
+'@
+function Invoke-Private([string]$action, [string]$p, [string]$destination) {
 CheckPath $p
-switch ($env:SN_PRIVATE_ACTION) {
+switch ($action) {
   'directory' {
     $missing = [Collections.Generic.Stack[string]]::new()
     $cursor = $p
@@ -78,38 +91,40 @@ switch ($env:SN_PRIVATE_ACTION) {
     CheckAcl $p $true $true
   }
   'file' {
-    CheckAcl $p $false $false
     # Only inherited files depend on the private parent (e.g. an empty lock left by a crash).
-    if (-not ([IO.File]::GetAccessControl($p)).AreAccessRulesProtected) {
-      CheckAcl ([IO.Path]::GetDirectoryName($p)) $true $true
-    }
+    $inherited = -not ([IO.File]::GetAccessControl($p)).AreAccessRulesProtected
+    CheckAcl $p $false $false $inherited
+    if ($inherited) { CheckAcl ([IO.Path]::GetDirectoryName($p)) $true $true }
   }
   'protect-file' {
     # Creation already inherited a user-only ACL from the verified private directory.
-    CheckAcl $p $false $false
+    CheckAcl $p $false $false $true
     [IO.File]::SetAccessControl($p, (NewSecurity $false))
     CheckAcl $p $false $true
   }
   'replace' {
     CheckAcl $p $false $true
-    CheckPath $env:SN_PRIVATE_DESTINATION
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class PrivateFileMove {
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  [return: MarshalAs(UnmanagedType.Bool)]
-  public static extern bool MoveFileEx(string existing, string destination, uint flags);
-}
-'@
+    CheckPath $destination
     # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH; same-directory rename only.
-    if (-not [PrivateFileMove]::MoveFileEx($p, $env:SN_PRIVATE_DESTINATION, 9)) {
+    if (-not [PrivateFileMove]::MoveFileEx($p, $destination, 9)) {
       throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
     }
   }
   default { throw 'Invalid action' }
 }
+}
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  try {
+    $r = ConvertFrom-Json $line
+    # Discard pipeline output: one stray line would shift every later reply.
+    $null = Invoke-Private ([string]$r.action) ([string]$r.path) ([string]$r.destination)
+    [Console]::Out.WriteLine('ok')
+  } catch { [Console]::Out.WriteLine('fail') }
+  [Console]::Out.Flush()
+}
 `;
+
+let windowsHelper: LineHelper | undefined;
 
 async function windowsPrivateFs(action: string, file: string, destination = ""): Promise<void> {
   if (!path.isAbsolute(file) || (destination && !path.isAbsolute(destination))) {
@@ -117,13 +132,15 @@ async function windowsPrivateFs(action: string, file: string, destination = ""):
   }
   const root = process.env.SystemRoot;
   if (!root || !path.isAbsolute(root)) throw new Error("Windows system directory is unavailable");
-  try {
-    await execFileAsync(path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(windowsScript, "utf16le").toString("base64")],
-      { env: { ...process.env, SN_PRIVATE_ACTION: action, SN_PRIVATE_PATH: file, SN_PRIVATE_DESTINATION: destination },
-        timeout: 15_000, maxBuffer: 16_384, windowsHide: true });
-  } catch {
-    // Child errors may include filesystem paths; never forward native diagnostic output.
+  windowsHelper ??= createLineHelper(path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(windowsScript, "utf16le").toString("base64")],
+    // The first request includes PowerShell start-up and compiling the rename shim.
+    30_000);
+  let reply: string;
+  try { reply = await windowsHelper.request({ action, path: file, destination }); }
+  catch { reply = "fail"; }
+  // Never forward native diagnostic output: it may include filesystem paths.
+  if (reply !== "ok") {
     throw new Error("Private NTFS operation failed: user ownership, restrictive ACLs and non-reparse paths are required");
   }
 }

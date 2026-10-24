@@ -218,7 +218,7 @@ export async function createClientFromLogin(
     if (!mfaPrompt) {
       throw new Error(
         "Two-factor authentication is enabled on this account. " +
-          "Run `npm run login` interactively (it wires the MFA prompt).",
+          "Run `standardnotes-mcp login` interactively (it wires the MFA prompt).",
       );
     }
     const mfaKey =
@@ -295,12 +295,12 @@ export async function createClientFromSession(
   const stored = await loadSession(config.email);
   if (!stored) {
     throw new Error(
-      "No session found. Run `npm run login` to authenticate first.",
+      "No session found. Run `standardnotes-mcp login` to authenticate first.",
     );
   }
   if (!stored.masterKeyHex || !/^[0-9a-f]{64}$/i.test(stored.masterKeyHex)) {
     throw new Error(
-      "Stored session is missing a valid masterKey; run `npm run login` again.",
+      "Stored session is missing a valid masterKey; run `standardnotes-mcp login` again.",
     );
   }
   const keyParams = stored.keyParams as KeyParams004;
@@ -378,7 +378,7 @@ async function callSync(
       );
     } catch (refreshErr) {
       throw new Error(
-        "Session refresh failed; run `npm run login` to re-authenticate. " +
+        "Session refresh failed; run `standardnotes-mcp login` to re-authenticate. " +
           (refreshErr instanceof Error ? refreshErr.message : String(refreshErr)),
       );
     }

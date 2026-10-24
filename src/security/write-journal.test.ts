@@ -15,7 +15,8 @@ async function fixture(fn: (dir: string) => Promise<void>) {
   try { await privateDirectory(dir); await fn(dir); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-describe("encrypted write journal", () => {
+// Windows private-file checks launch PowerShell, about a second each.
+describe("encrypted write journal", { timeout: 120_000 }, () => {
   it("stores no plaintext and reopens in another instance; repeat commit is idempotent", async () => fixture(async (dir) => {
     const key = new Uint8Array(32).fill(23);
     const client = fake();
@@ -87,7 +88,7 @@ describe("encrypted write journal", () => {
   }));
 });
 
-describe("account-wide cross-process exclusion", () => {
+describe("account-wide cross-process exclusion", { timeout: 120_000 }, () => {
   it("rejects concurrent access, refuses live-owner unlock, releases after errors", async () => fixture(async(dir)=>{
     await withAccountLock(dir,async()=>{
       await expect(withAccountLock(dir,async()=>undefined)).rejects.toThrow(/busy/);

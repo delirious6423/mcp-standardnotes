@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Windows x64 gate in a throwaway copy of the dotfiles native Windows golden VM (vm/windows/run.sh):
 # npm ci, typecheck, build, unit tests incl. VM-only NTFS ACL checks, and the MCP e2e with the real
-# Credential Manager. Portable Node from nodejs.org (SHA-256 checked). The copy is discarded afterwards.
+# Credential Manager (guest side: windows-guest.ps1). Portable Node from nodejs.org (SHA-256 checked).
+# The copy is discarded afterwards.
 set -euo pipefail
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOTFILES="${DOTFILES:-$HOME/code/dotfiles}"
@@ -40,21 +41,6 @@ OWNED=1
 read_reference "$N/run"
 set_ssh "$REF_NAME"
 SCP=(scp -q -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
-timeout 300 "${SCP[@]}" "$ZIP" "$OUT/source.tar" "${SSH[-1]}:"
-# shellcheck disable=SC2016 # PowerShell expands these in the guest.
-timeout 3000 "${SSH[@]}" '$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
-Expand-Archive -Force "$HOME\node-'"$NODE"'-win-x64.zip" "$HOME"
-New-Item -ItemType Directory -Force "$HOME\sn" | Out-Null
-tar -xf "$HOME\source.tar" -C "$HOME\sn"
-$env:Path = "$HOME\node-'"$NODE"'-win-x64;" + $env:Path
-$env:SN_VM_TEST = "1"
-"Windows " + [Environment]::OSVersion.Version + ", " + $env:PROCESSOR_ARCHITECTURE + ", node " + (node --version) + ", npm " + (npm --version)
-Set-Location "$HOME\sn"
-function Step($name, [scriptblock]$run) { & $run; if ($LASTEXITCODE -ne 0) { "FAIL: $name ($LASTEXITCODE)"; exit 1 } }
-Step "npm ci" { npm ci --no-audit --no-fund }
-Step "typecheck" { npm run typecheck }
-Step "build" { npm run build }
-Step "unit tests" { npm test }
-Step "e2e" { node tests/mcp-e2e.mjs }
-"PASS: Windows x64 TypeScript checks, NTFS ACL tests, Credential Manager and MCP acceptance"' | tr -d '\r'
+timeout 300 "${SCP[@]}" "$ZIP" "$OUT/source.tar" "$SOURCE/tests/vm/windows-guest.ps1" "${SSH[-1]}:"
+# -ExecutionPolicy Bypass applies to this one process; the guest policy is unchanged.
+timeout 3000 "${SSH[@]}" "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \$HOME\\windows-guest.ps1 -Node $NODE; exit \$LASTEXITCODE" | tr -d '\r'

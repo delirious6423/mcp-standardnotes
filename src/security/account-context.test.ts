@@ -20,16 +20,18 @@ const fakeClient = () => {
 
 let dir: string;
 beforeEach(async () => {
-  dir = await mkdtemp(path.join(os.tmpdir(), "sn-context-"));
+  // A child directory, created by the connector itself: Windows refuses a pre-existing admin-owned one.
+  dir = path.join(await mkdtemp(path.join(os.tmpdir(), "sn-context-")), "state");
   vi.stubEnv("SN_STATE_DIR", dir);
   vi.stubEnv("SN_SERVER_URL", "");
   resetClientCache();
   mocks.create.mockReset();
   mocks.load.mockReset();
 });
-afterEach(async () => { vi.unstubAllEnvs(); vi.useRealTimers(); await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.useRealTimers(); await rm(path.dirname(dir), { recursive: true, force: true }); });
 
-describe("per-process client", () => {
+// Windows private-file checks launch PowerShell, about a second each.
+describe("per-process client", { timeout: 120_000 }, () => {
   it("reuses one client, adopts rotated keychain tokens, and rebuilds after re-login or an error", async () => {
     const first = fakeClient(); first.setTokens("a1", "r1");
     const second = fakeClient();

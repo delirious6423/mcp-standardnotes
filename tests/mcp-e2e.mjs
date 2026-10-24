@@ -81,7 +81,9 @@ const parse=(r)=>JSON.parse(r.content.find(x=>x.type==='text').text);
 // approves through the same journal call the CLI makes after its typed confirmation.
 async function approve(operationId,answer=`approve ${operationId}`) {
   const cli=[process.execPath,'dist/cli/approve.js',operationId];
-  const opts={env,input:`${answer}\n`,encoding:'utf8',timeout:20000};
+  // Windows private-file checks launch PowerShell per step, so a journal update takes seconds there.
+  const opts={env,input:`${answer}\n`,encoding:'utf8',timeout:process.platform==='win32'?120000:20000};
+  const started=Date.now();
   const child=process.platform!=='win32' ? spawnSync('python3',['-I','tests/approve-pty.py',answer,...cli],opts)
     : spawnSync(process.execPath,['--input-type=module','-e',`
       import path from 'node:path';
@@ -92,6 +94,7 @@ async function approve(operationId,answer=`approve ${operationId}`) {
       const j=new WriteJournal(dir,await recoveryKey(path.basename(dir),false));
       await withAccountLock(dir,()=>${JSON.stringify(answer)}==='reject'?j.reject(${JSON.stringify(operationId)}):j.approve(${JSON.stringify(operationId)}));`],opts);
   assert.equal(child.status,0,`approval CLI: ${child.stdout} ${child.stderr}`);
+  if(process.platform==='win32') console.log(`approval took ${Date.now()-started} ms`);
 }
 async function call(c,name,args={}) {
   if(name==='writes_commit') {

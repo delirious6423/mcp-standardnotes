@@ -14,6 +14,16 @@ vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return { ...actual, open: vi.fn(actual.open) };
 });
+const helperMock = vi.hoisted(() => ({ created: [] as Array<{ command: string; args: string[]; timeoutMs: number }>, reply: vi.fn() }));
+vi.mock("./line-helper.js", async (original) => {
+  const actual = await original<typeof import("./line-helper.js")>();
+  // Native Windows runs use the real helper; elsewhere the contract tests see a recording double.
+  if (process.platform === "win32") return actual;
+  return { ...actual, createLineHelper: (command: string, args: string[], timeoutMs: number) => {
+    helperMock.created.push({ command, args, timeoutMs });
+    return { request: helperMock.reply, close: () => undefined };
+  } };
+});
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   return { ...actual, execFile: vi.fn(actual.execFile) };
@@ -161,60 +171,54 @@ describe.skipIf(windows)("POSIX protection regressions", () => {
   }));
 });
 
-describe("Windows native tool-call contract (test doubles only)", () => {
-  it("uses a fixed encoded script, an absolute executable and data-only environment with a timeout", async () => {
+// Native Windows exercises the real helper in the acceptance suite below instead.
+describe.skipIf(windows)("Windows native tool-call contract (test doubles only)", () => {
+  const windowsFake = () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     vi.stubEnv("SystemRoot", path.resolve("synthetic-windows"));
-    vi.mocked(execFile).mockImplementation((...args: any[]) => {
-      args[args.length - 1](null, "", "");
-      return {} as ReturnType<typeof execFile>;
-    });
+  };
+  const script = () => Buffer.from(helperMock.created[0]!.args.at(-1)!, "base64").toString("utf16le");
+
+  it("starts one PowerShell helper from a fixed encoded script and sends paths only as request data", async () => {
+    windowsFake();
+    helperMock.reply.mockResolvedValue("ok");
     const file = path.resolve("synthetic ' $() & path");
     await privateDirectory(file);
     await privateDirectory(`${file}-other`);
-    const [command, args, options] = vi.mocked(execFile).mock.calls[0] as any[];
+    expect(helperMock.created).toHaveLength(1);
+    const [{ command, args, timeoutMs }] = helperMock.created as [typeof helperMock.created[0]];
     expect(path.isAbsolute(command)).toBe(true);
     expect(command).toMatch(/WindowsPowerShell/);
     expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
-    const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
-    expect(script).not.toContain(file);
-    expect(script).toContain("GetCurrent().User");
-    expect(script).toContain("SetAccessRuleProtection($true, $false)");
-    expect(script).toContain("ReparsePoint");
-    expect(script).toContain("DriveFormat -ne 'NTFS'");
-    expect(script).toContain("$rules.Count -ne 1");
-    expect(script).toContain("GetOwner");
-    expect(options).toMatchObject({ timeout: 15000, windowsHide: true, env: { SN_PRIVATE_PATH: file, SN_PRIVATE_ACTION: "directory" } });
-    expect(options.shell).toBeUndefined();
-    expect(vi.mocked(execFile).mock.calls[1]?.[1]).toEqual(args);
+    expect(timeoutMs).toBe(30_000);
+    expect(script()).not.toContain(file);
+    for (const piece of ["GetCurrent().User", "SetAccessRuleProtection($true, $false)", "ReparsePoint", "DriveFormat -ne 'NTFS'",
+      "$rules.Count -ne 1", "GetOwner", "[Console]::In.ReadLine()", "$null = Invoke-Private"]) expect(script()).toContain(piece);
+    expect(helperMock.reply.mock.calls).toEqual([[{ action: "directory", path: file, destination: "" }],
+      [{ action: "directory", path: `${file}-other`, destination: "" }]]);
   });
 
   it("uses write-through native replacement instead of attempting directory fsync on Windows", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    vi.stubEnv("SystemRoot", path.resolve("synthetic-windows"));
-    vi.mocked(execFile).mockImplementation((...args: any[]) => {
-      args[args.length - 1](null, "", "");
-      return {} as ReturnType<typeof execFile>;
-    });
+    windowsFake();
+    helperMock.reply.mockResolvedValue("ok");
     const temp = path.resolve("synthetic-dir", "temp");
     const file = path.resolve("synthetic-dir", "record.enc");
     await durablePrivateRename(temp, file);
-    const [, args, options] = vi.mocked(execFile).mock.calls[0] as any[];
-    const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
-    expect(script).toContain("MoveFileEx($p, $env:SN_PRIVATE_DESTINATION, 9)");
-    expect(options.env).toMatchObject({ SN_PRIVATE_ACTION: "replace", SN_PRIVATE_PATH: temp, SN_PRIVATE_DESTINATION: file });
+    expect(script()).toContain("MoveFileEx($p, $destination, 9)");
+    expect(helperMock.reply).toHaveBeenLastCalledWith({ action: "replace", path: temp, destination: file });
     expect(fs.open).not.toHaveBeenCalled();
     await expect(durablePrivateRename(temp, path.resolve("another-dir", "record.enc"))).rejects.toThrow(/one directory/);
   });
 
   it("fails closed and does not forward native errors that may contain filesystem paths", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    vi.stubEnv("SystemRoot", path.resolve("synthetic-windows"));
-    vi.mocked(execFile).mockImplementation((...args: any[]) => {
-      args[args.length - 1](new Error("SYNTHETIC_PATH_MUST_NOT_LEAK"), "", "SYNTHETIC_PATH_MUST_NOT_LEAK");
-      return {} as ReturnType<typeof execFile>;
-    });
-    await expect(privateDirectory(path.resolve("synthetic"))).rejects.toThrow(/^Private NTFS operation failed:/);
+    windowsFake();
+    for (const outcome of [() => helperMock.reply.mockResolvedValueOnce("fail"), () => helperMock.reply.mockResolvedValueOnce("SYNTHETIC_PATH_MUST_NOT_LEAK"),
+      () => helperMock.reply.mockRejectedValueOnce(new Error("SYNTHETIC_PATH_MUST_NOT_LEAK"))]) {
+      outcome();
+      const error = await privateDirectory(path.resolve("synthetic")).catch((e: Error) => e);
+      expect(String(error)).toMatch(/Private NTFS operation failed:/);
+      expect(String(error)).not.toContain("SYNTHETIC_PATH_MUST_NOT_LEAK");
+    }
   });
 });
 
