@@ -9,24 +9,30 @@ Latest Linux result (2026-10-25, Ubuntu 26.04.1 LTS, Node 22, npm 11.21.1 in the
 TypeScript / ESLint / build: PASS
 PASS regression canary: old protected-search behavior fails its assertion; fixed source restored
 PASS regression canary: preflight cancellation fails without any of the three send-boundary guards
-Test Files 20 passed (20)
-Tests      214 passed | 5 skipped (219)
+Test Files 22 passed (22)
+Tests      231 passed | 5 skipped (236)
 found 0 vulnerabilities
-PASS: 74 assertions, two real stdio MCP clients, real OS keychain, encrypted recovery, stale edits,
+PASS: 100 assertions, two real stdio MCP clients, real OS keychain, encrypted recovery, stale edits,
       timeout/retry, token rotation and exclusion
 PASS: Ubuntu 26.04 native Incus VM checks (synthetic data; no cloud account)
 CLEANUP PASS: owned VM discarded
 ```
 
-The end-to-end suite approves and rejects through the real `approve` command under a pseudo-terminal
-(macOS uses BSD `script`; Windows approves through the same journal call because it has no `script`).
+Latest macOS result (2026-10-25, macOS 26.6.2 arm64 Tart VM on Apple Silicon, Node 24.21.0):
+`bash tests/vm/macos-run.sh` PASS — same 231 unit tests and 100 e2e assertions with a synthetic
+Keychain; the VM was token-verified and deleted.
+
+The end-to-end suite approves and rejects through the real `approve` command in a pseudo-terminal
+(`tests/approve-pty.py` types only after the prompt). Windows has no pty module, so it approves through
+the same journal call the CLI makes.
 
 The batch-write changes passed an independent adversarial review; its four findings were fixed with
 regression tests that fail when the fix is removed.
 
 ## Not claimed
 
-- macOS and Windows have not been re-run since the native GUI was removed.
+- Windows x64: `bash tests/vm/windows-run.sh` exists but has not run yet (the shared Windows VM slot was
+  in use by another session). Windows ARM64 and Linux ARM64 have not been run.
 - Synthetic HTTP tests are not proof of official-cloud behavior, rate limits or official-app rendering.
   Legacy 003 reads were round-tripped once against a real account in the official app.
 - Approval is not a sandbox against an agent with unrestricted shell access as the same user.

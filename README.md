@@ -174,7 +174,8 @@ npm run typecheck && npm run lint && npm test
 ```
 
 Integration tests (real stdio clients, real keychain, synthetic server) run in a throwaway VM:
-`bash tests/vm/run.sh` (Linux, Incus) and `bash tests/vm/macos-run.sh` (macOS, Tart). See
+`bash tests/vm/run.sh` (Linux, Incus), `bash tests/vm/macos-run.sh` (macOS, Tart) and
+`bash tests/vm/windows-run.sh` (Windows x64, Incus). See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License and credits

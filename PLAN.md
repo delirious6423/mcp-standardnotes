@@ -19,7 +19,7 @@ every write previewed and approved by a human, reversible where Standard Notes a
 - [x] Own identity: package `standardnotes-safe-mcp` 0.7.0 (private), server id and User-Agent renamed; upstream publish workflow, server.json and release script removed. Keychain service unchanged.
 - [x] Make this line the fork's `main` (fast-forward); CI on Node 22 and 24, matching `engines`.
 - [x] Bugs: launcher follows symlinks to its checkout; installer entry check compares real paths (upstream #24); `dump-note` (printed decrypted text, ignored protection) removed.
-- [ ] Re-run macOS and Windows VM gates.
+- [ ] Re-run macOS and Windows VM gates. macOS ARM64 PASS 2026-10-25. Windows x64: `tests/vm/windows-run.sh` written, not yet run (slot busy). Windows ARM64, Linux ARM64: not run.
 
 ## Boundaries
 Standard Notes sync and stored recovery payloads stay end-to-end encrypted. The MCP server uses stdio pipes, never a listening port. Cloud models see the plaintext the agent reads. Protected notes stay excluded. Tests use synthetic data in throwaway VMs (`tests/vm/run.sh`); no real-account writes or package installs on the desktop as tests.
