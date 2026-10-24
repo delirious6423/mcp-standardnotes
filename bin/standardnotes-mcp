@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Follow symlinks (e.g. ~/.local/bin/standardnotes-mcp) to the checkout; relative links resolve from their directory.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" == /* ]] || SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 if [[ "${1:-}" == help || "${1:-}" == --help ]]; then
     printf '%s\n' 'Usage: standardnotes-mcp [serve|login|logout|approve OPERATION_UUID|unlock --clients-stopped]' \
       'Credentials: interactive login stores them only in your OS keychain.' \

@@ -14,7 +14,7 @@ vi.mock("keytar", () => ({
   },
 }));
 
-import { buildEntry, installDesktop } from "./install.js";
+import { buildEntry, installDesktop, isMainModule } from "./install.js";
 
 const fakePaths = {
   node: "/abs/path/to/node",
@@ -107,5 +107,21 @@ describe("install — installDesktop (against a tmpdir)", () => {
     await expect(
       installDesktop({ email: "a@b.co", paths: fakePaths, configPath }),
     ).rejects.toThrow(/not valid JSON/);
+  });
+});
+
+describe("isMainModule", () => {
+  it("matches when run through an npm-style bin symlink, and not for other or missing paths", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const { pathToFileURL } = await import("node:url");
+    const dir = await mkdtemp(join(tmpdir(), "sn-main-"));
+    const real = join(dir, "install.js");
+    await writeFile(real, "");
+    await symlink(real, join(dir, "bin-link"));
+    const url = pathToFileURL(real).href;
+    expect(isMainModule(url, join(dir, "bin-link"))).toBe(true);
+    expect(isMainModule(url, real)).toBe(true);
+    expect(isMainModule(url, join(dir, "missing"))).toBe(false);
+    expect(isMainModule(url, undefined)).toBe(false);
   });
 });

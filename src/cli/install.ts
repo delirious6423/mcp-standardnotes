@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile, writeFile, copyFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -202,15 +202,16 @@ async function main(): Promise<void> {
   }
 }
 
-// Don't auto-run when imported (e.g. from login.ts or tests).
-const isMain = (() => {
+// Don't auto-run when imported (e.g. from login.ts or tests). npm installs bins as symlinks and Node
+// resolves import.meta.url through them, so compare real paths (same fix as lozit/mcp-standardnotes#24).
+export function isMainModule(moduleUrl: string, argv1: string | undefined): boolean {
   try {
-    return fileURLToPath(import.meta.url) === resolve(process.argv[1] ?? "");
+    return argv1 !== undefined && fileURLToPath(moduleUrl) === realpathSync(resolve(argv1));
   } catch {
     return false;
   }
-})();
-if (isMain) {
+}
+if (isMainModule(import.meta.url, process.argv[1])) {
   main().catch((err) => {
     process.stderr.write(
       `${err instanceof Error ? err.message : String(err)}\n`,
