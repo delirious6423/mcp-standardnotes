@@ -4,6 +4,7 @@ import { logger } from "../security/logger.js";
 import { createClientFromLogin } from "../sn/client.js";
 import { accountDirectory, privateDirectory, withAccountLock } from "../security/account-state.js";
 import { serverUrl as configuredServerUrl } from "../sn/server-url.js";
+import { configureStateDirectory } from "../config.js";
 
 const CTRL_C = "";
 const DEL = "";
@@ -80,8 +81,7 @@ async function main(): Promise<void> {
   if (!password) throw new Error("password is required");
 
   try {
-    const base = process.env.SN_STATE_DIR;
-    if (!base) throw new Error("Use bin/standardnotes-mcp login so SN_STATE_DIR is configured");
+    const base = await configureStateDirectory();
     const dir = accountDirectory(base, serverUrl, email);
     await privateDirectory(base);
     const stats = await withAccountLock(dir, async () => {

@@ -4,8 +4,9 @@ import path from "node:path";
 
 /** Resolve the same state directory from a desktop launch, MCP, or terminal. Never execute machine files. */
 export async function configureStateDirectory(): Promise<string> {
-  let base = process.env.SN_STATE_DIR;
-  let data = process.env.DATA_DIR;
+  // Empty means unset: client configs often carry `SN_STATE_DIR=""`.
+  let base = process.env.SN_STATE_DIR || undefined;
+  let data = process.env.DATA_DIR || undefined;
   if (!base && !data) {
     try {
       const machine = await readFile(path.join(os.homedir(), "code/dotfiles/machines", `${os.hostname()}.env`), "utf8");

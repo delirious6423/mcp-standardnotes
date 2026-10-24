@@ -1,160 +1,167 @@
-<p align="center">
-  <img src="./banner@2x.png" alt="mcp-standardnotes" width="100%">
-</p>
+# Standard Notes MCP (safe fork)
 
-# mcp-standardnotes
-
-> **Local safety fork:** setup, supported safe tools, privacy, approval/recovery and test limits are in [docs/LOCAL-SETUP.md](docs/LOCAL-SETUP.md). The upstream feature/install descriptions below are historical and do not describe this fork's exposed write interface. Do not install the upstream npm package to obtain this fork.
-
-[![CI](https://github.com/lozit/mcp-standardnotes/actions/workflows/ci.yml/badge.svg)](https://github.com/lozit/mcp-standardnotes/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Node: ≥20](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](#requirements)
+[![Node: ≥22.12](https://img.shields.io/badge/node-%E2%89%A522.12-brightgreen.svg)](#install)
 
-**Give Claude secure read/write access to your [Standard Notes](https://standardnotes.com/) vault — end-to-end encrypted, local stdio only, zero cloud middleman.**
+A local [MCP](https://modelcontextprotocol.io) server that lets an AI agent read and reorganize your
+[Standard Notes](https://standardnotes.com/) vault. Every write is previewed first and approved by you in
+your own terminal, and nothing is ever permanently deleted.
 
-Ask Claude to summarize your notes, draft new ones, organize tags, search across your vault — all while your master key stays on your machine. Works with Claude Code, Claude Desktop, and any MCP-compatible client.
+This is a maintained fork of [lozit/mcp-standardnotes](https://github.com/lozit/mcp-standardnotes), which
+has been inactive since August 2026. It differs from upstream in what it allows:
 
-> **Disclaimer.** This is an unofficial third-party integration. Not affiliated with, endorsed by, or sponsored by Standard Notes Ltd. "Standard Notes" is a trademark of Standard Notes Ltd.
+| | Upstream | This fork |
+|---|---|---|
+| Writes | Applied immediately | Preview, then your approval in a terminal, then commit |
+| Deletion | `notes_delete`, `tags_delete` | None; notes go to Trash, tags are removed in the official app |
+| Bulk changes | `notes_create_many` | Up to 200 changes (create, edit, trash, tag) per approval |
+| Undo | None | Encrypted before/after record of every write; one-call undo |
+| Concurrent edits | On a sync conflict, re-sends its version over the other edit | Stale or conflicting writes fail without sending anything |
+| Old accounts | Protocol 004 items only | Also reads legacy protocol 003 items |
+| Protected notes | Masked in lists, but still matched by search | Excluded from reads, search and writes |
 
-## Why
+> Unofficial third-party integration. Not affiliated with or endorsed by Standard Notes Ltd.
 
-- 🔒 **End-to-end encrypted.** All decryption happens locally using audited libsodium primitives (Argon2id + XChaCha20-Poly1305 IETF). Your password never leaves RAM; your master key never leaves your machine.
-- 🔌 **Local stdio only.** No network port is ever opened by this server.
-- 🔑 **OS keychain for session storage.** macOS Keychain, Linux libsecret, Windows Credential Vault — never plaintext files.
-- ☁️ **Works with the official cloud or self-hosted** Standard Notes servers.
+## What an agent can do
 
-## Features
+| Tool | Purpose |
+|---|---|
+| `notes_list`, `notes_search`, `notes_get`, `notes_stats` | Browse, search (title/body, optional tag filter) and summarize the vault |
+| `notes_get_batch` | Read up to 200 notes with one sync |
+| `tags_list`, `tags_get` | Browse tags and their notes |
+| `writes_prepare` | Preview one change |
+| `writes_prepare_batch` | Preview up to 200 changes as one operation |
+| `writes_commit` | Apply an approved operation exactly as previewed |
+| `writes_status` | Check an operation's state, including partly saved batches |
+| `writes_undo_prepare` | Preview the undo of a committed operation |
 
-| Tool | What it does |
-|------|---|
-| `notes_list` / `notes_search` / `notes_get` | Browse and search your notes (filter by tag with `tag: "<uuid-or-title>"`) |
-| `notes_create` / `notes_update` / `notes_delete` | Write notes (markdown, super, code, rich-text, task, spreadsheet, plain-text) |
-| `notes_create_many` | Batch-create up to 50 notes in one sync push |
-| `notes_stats` | Vault stats: counts, sizes, oldest/newest/largest note |
-| `tags_list` / `tags_get` / `tags_create` / `tags_update` / `tags_delete` | Full tag CRUD |
-| `tags_attach` / `tags_detach` | Link/unlink tags to notes |
-| `sync` | Force a sync with the server |
+Change kinds: `note_create`, `note_update` (rename, replace or append text), `note_trash`, `note_restore`,
+`tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Body edits support plain text and Markdown;
+other note types can be renamed, tagged or trashed without touching their body.
 
-`notes_create` and `notes_update` accept an optional `tags: string[]` (tag UUIDs) to link tags at write time.
+## How a write works
 
-## Requirements
+1. The agent reads notes. Each read includes a revision.
+2. The agent calls `writes_prepare` or `writes_prepare_batch` with the changes and those revisions. Nothing
+   is sent; you get an operation ID.
+3. You review and approve it in your terminal:
 
-- **Node.js ≥ 20**
-- A Standard Notes account on **protocol 004** (default for any account created or upgraded since 2020)
-- macOS, Linux, or Windows with a working OS keychain
+   ```text
+   $ standardnotes-mcp approve 3f0c2a9e-6b1d-4c8e-9a51-7d2f0b4e8c13
+   Operation 3f0c2a9e-6b1d-4c8e-9a51-7d2f0b4e8c13 (prepared), expires 2026-10-25T05:12:00.000Z
+   Characters shown as ⟦U+XXXX⟧ are invisible or control characters in the note content.
 
-## Quickstart
+   Batch of 3 item(s): {"tag_attach":2,"note_trash":1,"note_update":1}
 
-### 1. Install
+   [1/3] Tag "Travel" a1b2c3d4-0000-4000-8000-000000000001
+       change: tag_attach+tag_attach
+       references:
+         + Note "Kyoto itinerary" a1b2c3d4-0000-4000-8000-000000000002
+         + Note "Packing list" a1b2c3d4-0000-4000-8000-000000000003
+
+   [2/3] Note "Packing list" a1b2c3d4-0000-4000-8000-000000000003
+       change: note_update
+       title:
+         from: "packing"
+         to:   "Packing list"
+
+   [3/3] Note "https://example.com" a1b2c3d4-0000-4000-8000-000000000004
+       change: note_trash
+       trashed:
+         from: null
+         to:   true
+
+   Type "approve 3f0c2a9e-…" to allow exactly this operation, or "reject" to refuse it permanently:
+   ```
+
+   Every changed field is shown in full. Invisible and control characters in note text are shown as
+   markers, so a note cannot disguise what it changes. `--json` prints the raw stored preview.
+4. The agent calls `writes_commit`. If any item changed since it was read, nothing is sent. The result is
+   read back from the server before it is reported as saved.
+5. If something went wrong mid-way, `writes_status` says which items landed; retrying the same operation
+   ID only reconciles and never sends twice. `writes_undo_prepare` stages an undo, which you approve the
+   same way.
+
+## Install
+
+Requires Node.js ≥ 22.12, a working OS keychain (macOS Keychain, Linux Secret Service, Windows Credential
+Manager) and a Standard Notes account (official cloud or self-hosted).
 
 ```bash
-npm install -g mcp-standardnotes
+git clone https://github.com/delirious6423/mcp-standardnotes.git standardnotes-mcp
+cd standardnotes-mcp
+npm ci && npm run build
+bin/standardnotes-mcp login        # email, password, 2FA; stored only in the OS keychain
 ```
 
-Or run from a clone if you prefer:
-
-```bash
-git clone https://github.com/lozit/mcp-standardnotes.git
-cd mcp-standardnotes
-npm install && npm run build
-```
-
-### 2. Log in once
-
-```bash
-mcp-standardnotes-login         # if installed globally
-# or, from a clone:
-npm run login
-```
-
-You'll be prompted for email and password. The password derives your master key in memory (Argon2id) and is never written to disk. An encrypted session is stored in your OS keychain; subsequent runs reuse it automatically. At the end of `login`, you're offered to wire the server into Claude Desktop in one step — accept it, restart Desktop, done.
-
-### 3. Hook it up to Claude
-
-**Claude Desktop (macOS / Windows)** — easiest path, run:
-
-```bash
-mcp-standardnotes-install
-```
-
-This writes the right entry (absolute Node + binary paths, your email from the keychain) into `~/Library/Application Support/Claude/claude_desktop_config.json` (or `%APPDATA%/Claude/claude_desktop_config.json` on Windows), backing up any existing config first. Quit Claude Desktop fully (⌘Q) and relaunch.
-
-**Claude Code** — let the `claude` CLI do it:
-
-```bash
-mcp-standardnotes-install code   # prints the exact `claude mcp add` command
-```
-
-Or add to `~/.claude.json` / `.mcp.json` manually:
+Add the server to your MCP client (Claude Code `~/.claude.json`, Claude Desktop, Pi, or any stdio client):
 
 ```json
 {
   "mcpServers": {
-    "mcp-standardnotes": {
-      "type": "stdio",
-      "command": "mcp-standardnotes",
-      "env": { "SN_EMAIL": "you@example.com" }
+    "standardnotes": {
+      "command": "/absolute/path/to/standardnotes-mcp/bin/standardnotes-mcp",
+      "args": ["serve"]
     }
   }
 }
 ```
 
-Then `/mcp` to reconnect.
+No password or email goes in this file. Approve writes with `bin/standardnotes-mcp approve <operation-id>`
+(add `bin/` to your `PATH` to shorten it). On Windows, run the same commands with
+`node dist/index.js` and `node dist/cli/<login|approve>.js` in place of the launcher.
 
-**Any other MCP client** — run `node dist/index.js` with `SN_EMAIL` set in the environment. Transport is stdio.
-
-**Self-hosting Standard Notes?** See [docs/self-hosted.md](./docs/self-hosted.md) for the docker-compose recipe and how to pin your TLS certificate.
-
-**Want a remote agent (Hermes on a VPS, self-hosted LangGraph, etc.) to use your vault?** See [docs/remote-agent-bridge.md](./docs/remote-agent-bridge.md) for the full Cloudflare Tunnel + MCP Portals setup. Your master key stays on your Mac; the agent talks to a public HTTPS endpoint gated by a Cloudflare service token, and Portals handles automatic MCP tool discovery, multi-server bundling, and Access application generation.
+Sign out with `bin/standardnotes-mcp logout`. More detail, including crash recovery and uninstalling:
+[docs/LOCAL-SETUP.md](docs/LOCAL-SETUP.md).
 
 ## Configuration
 
-| Variable | Default | Description |
+| Variable | Default | Purpose |
 |---|---|---|
-| `SN_EMAIL` | *required* | Your SN account email. Must match what you used with `npm run login`. |
-| `SN_SERVER_URL` | `https://api.standardnotes.com` | Sync server URL. Change for self-hosted instances. |
-| `KEYCHAIN_SERVICE` | `mcp-standardnotes` | Override the keychain service name (useful for multiple accounts). |
-| `SN_CERT_FINGERPRINT` | *unset* | SHA-256 TLS cert pin for self-hosted servers (64 hex chars, colons optional). See [docs/self-hosted.md](./docs/self-hosted.md). |
+| `SN_EMAIL` | the only saved account | Which account to use when several are logged in |
+| `SN_SERVER_URL` | `https://api.standardnotes.com` | Self-hosted sync server ([docs/self-hosted.md](docs/self-hosted.md)) |
+| `SN_CERT_FINGERPRINT` | unset | Pin a self-hosted server's TLS certificate (SHA-256) |
+| `SN_STATE_DIR` | `$DATA_DIR/standardnotes-mcp`, else the OS state directory | Where encrypted operation and recovery records live |
+| `SN_CACHE_TTL_MS` | see [src/sn/cache.ts](src/sn/cache.ts) | How long a synced vault is reused within one process |
+| `SN_ALLOW_LEGACY_UUID_MISMATCH` | unset | `1` reads old 003 notes whose embedded ID differs from the server's (read-only) |
+| `KEYCHAIN_SERVICE` | `mcp-standardnotes` | Keychain entry name |
 
-## Security at a glance
+## Privacy and safety
 
-- Password in RAM only during key derivation. Never logged, never stored.
-- Session + master key hex → OS keychain only. Never plaintext files.
-- stdio transport only. No HTTP port, ever.
-- All logs go to stderr, routed through a redactor that masks passwords, keys, JWTs, and token-like strings.
-- All tool inputs validated by zod.
-- `npm audit` HIGH/CRITICAL is a merge blocker in CI.
-- Only the protocol 004 *framing* is implemented locally; all cryptographic primitives come from `libsodium-wrappers-sumo`.
+- Decryption happens on your machine with libsodium; the server never sees plaintext. Sessions and keys
+  live in the OS keychain. The MCP server talks over stdio and opens no network port.
+- Whatever the agent reads is sent to its model provider. Use a local model if that matters to you.
+- Note content is treated as untrusted data; the server instructions tell the agent not to follow commands
+  or links found in notes.
+- Protected notes are never returned, searched or changed. Edit-locked notes are readable but not writable.
+- Approval guards the MCP tool surface. It is not a sandbox: a process running as you with shell access
+  can run the approve command itself. Don't give untrusted agents unrestricted shell access.
+- Recovery records are encrypted with a separate key in your keychain. They are not a backup; keep your own.
 
-Full threat model and deep-dive: [docs/protocol-004.md](./docs/protocol-004.md).
-Security policy, vulnerability reporting, and dependency-advisory notes: [SECURITY.md](./SECURITY.md).
+Details: [docs/protocol-004.md](docs/protocol-004.md) and [SECURITY.md](SECURITY.md).
 
-## Troubleshooting
+## Known limits
 
-Common issues and fixes: [docs/troubleshooting.md](./docs/troubleshooting.md).
+- Each tool call currently syncs the whole vault, so many single calls in a row can hit the server's rate
+  limit (HTTP 429, about an hour). Use `notes_get_batch` and `writes_prepare_batch` for bulk work.
+- A tag created in a batch can't be attached in that same batch; attach it in the next one.
+- No archive/pin/star or nested-tag changes yet, and no tag deletion (by design).
+- Structured note types (Super, checklists, spreadsheets) can't have their body rewritten.
 
-## Logout
+Planned work: [PLAN.md](PLAN.md).
+
+## Development
 
 ```bash
-SN_EMAIL=you@example.com mcp-standardnotes-logout
-# or, from a clone:
-SN_EMAIL=you@example.com npm run logout
+npm run typecheck && npm run lint && npm test
 ```
 
-## Roadmap
+Integration tests (real stdio clients, real keychain, synthetic server) run in a throwaway VM:
+`bash tests/vm/run.sh` (Linux, Incus) and `bash tests/vm/macos-run.sh` (macOS, Tart). See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Upcoming work tracked in [ROADMAP.md](./ROADMAP.md).
+## License and credits
 
-## Contributing
-
-Contributions welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, tests, and PR checklist.
-
-## License
-
-[MIT](./LICENSE) — use it, fork it, ship it.
-
-## Credits
-
-- [Standard Notes](https://standardnotes.com/) for the encryption design and public API.
-- [Model Context Protocol](https://modelcontextprotocol.io) and [Anthropic](https://www.anthropic.com) for the MCP SDK.
-- [libsodium](https://doc.libsodium.org/) by Frank Denis, exposed via [libsodium-wrappers-sumo](https://github.com/jedisct1/libsodium.js).
+[MIT](LICENSE). Original project by Guillaume Ferrari ([lozit](https://github.com/lozit)); this fork keeps
+his copyright notice. Encryption design and API by [Standard Notes](https://standardnotes.com/);
+primitives from [libsodium](https://doc.libsodium.org/) via libsodium-wrappers-sumo.

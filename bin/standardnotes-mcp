@@ -13,8 +13,8 @@ if [[ -z "${SN_STATE_DIR:-}" && -z "${DATA_DIR:-}" ]]; then
     # shellcheck source=/dev/null
     if [[ -f "$MACHINE" ]]; then . "$MACHINE"; fi
 fi
-export SN_STATE_DIR="${SN_STATE_DIR:-${DATA_DIR:?Set DATA_DIR or SN_STATE_DIR}/standardnotes-mcp}"
-[[ "$SN_STATE_DIR" == /* ]] || { printf '%s\n' 'SN_STATE_DIR must be absolute' >&2; exit 1; }
+# Unset: the connector derives it from DATA_DIR or the OS state directory (src/config.ts).
+if [[ -n "${DATA_DIR:-}" ]]; then export DATA_DIR; fi
 [[ -f "$ROOT/dist/index.js" && -d "$ROOT/node_modules" ]] || {
     printf '%s\n' 'Connector is not built/installed. See docs/LOCAL-SETUP.md; do not download unpinned packages automatically.' >&2
     exit 1

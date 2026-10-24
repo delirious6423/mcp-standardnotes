@@ -6,6 +6,7 @@ import { accountDirectory, privateDirectory, withAccountLock } from "../security
 import { WriteJournal } from "../security/write-journal.js";
 import { recoveryKey, resolveEmail } from "../sn/session.js";
 import { renderPreview, visible } from "./render-preview.js";
+import { configureStateDirectory } from "../config.js";
 
 async function main(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Approval requires your interactive terminal, not piped input");
@@ -13,8 +14,7 @@ async function main(): Promise<void> {
   const json = args.includes("--json");
   const id = z.string().uuid().parse(args.find((a) => a !== "--json"));
   const server = process.env.SN_SERVER_URL ?? "https://api.standardnotes.com";
-  const base = process.env.SN_STATE_DIR;
-  if (!base) throw new Error("SN_STATE_DIR is required");
+  const base = await configureStateDirectory();
   const dir = accountDirectory(base, server, await resolveEmail(server));
   await privateDirectory(base);
   // Never hold the account lock while the human reads; re-check the immutable record at approval.

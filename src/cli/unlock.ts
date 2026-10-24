@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { accountDirectory, privateDirectory, unlockAbandonedAccount } from "../security/account-state.js";
 import { resolveEmail } from "../sn/session.js";
+import { configureStateDirectory } from "../config.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -8,8 +9,7 @@ async function main(): Promise<void> {
     throw new Error("Stop all Standard Notes MCP clients first, then pass --clients-stopped. Never remove a live lock.");
   }
   const server = process.env.SN_SERVER_URL ?? "https://api.standardnotes.com";
-  const base = process.env.SN_STATE_DIR;
-  if (!base) throw new Error("SN_STATE_DIR is required");
+  const base = await configureStateDirectory();
   const email = await resolveEmail(server);
   const dir = accountDirectory(base, server, email);
   await privateDirectory(base);
