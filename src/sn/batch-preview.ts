@@ -33,6 +33,29 @@ function appDataWithoutStamp(value: unknown): unknown {
   return Object.keys(copy).length === 0 ? undefined : copy;
 }
 
+const plain = (v: unknown): v is Content => !!v && typeof v === "object" && !Array.isArray(v);
+
+// Per-field app data changes, e.g. `appData.org.standardnotes.sn.archived`; malformed shapes show whole.
+function appDataDiff(from: unknown, to: unknown): Record<string, unknown> {
+  if (same(from, to)) return {};
+  if ((from !== undefined && !plain(from)) || (to !== undefined && !plain(to))) return { appData: { from: from ?? null, to: to ?? null } };
+  const out: Record<string, unknown> = {};
+  const a = (from ?? {}) as Content, b = (to ?? {}) as Content;
+  for (const domain of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const da = a[domain], db = b[domain];
+    if (same(da, db)) continue;
+    if ((da !== undefined && !plain(da)) || (db !== undefined && !plain(db))) {
+      out[`appData.${domain}`] = { from: da ?? null, to: db ?? null };
+      continue;
+    }
+    const fa = (da ?? {}) as Content, fb = (db ?? {}) as Content;
+    for (const key of new Set([...Object.keys(fa), ...Object.keys(fb)])) {
+      if (!same(fa[key], fb[key])) out[`appData.${domain}.${key}`] = { from: fa[key] ?? null, to: fb[key] ?? null };
+    }
+  }
+  return out;
+}
+
 function refIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((ref: unknown) => {
@@ -48,7 +71,7 @@ function diff(before: Content, after: Content, noteTitle: (uuid: string) => stri
     const from = before[key];
     const to = after[key];
     if (key === "appData") {
-      if (!same(appDataWithoutStamp(from), appDataWithoutStamp(to))) out[key] = { from: from ?? null, to: to ?? null };
+      Object.assign(out, appDataDiff(appDataWithoutStamp(from), appDataWithoutStamp(to)));
       continue;
     }
     // Plain/HTML previews are derived from the body and are rewritten with it.

@@ -45,6 +45,7 @@ export type SafeChange =
   | { kind: "note_create"; title: string; text: string; noteType?: "plain-text" | "markdown" }
   | { kind: "note_update"; uuid: string; revision: string; title?: string; text?: string; append?: string }
   | { kind: "note_trash" | "note_restore"; uuid: string; revision: string }
+  | { kind: "note_flags"; uuid: string; revision: string; archived?: boolean; pinned?: boolean; starred?: boolean }
   | { kind: "tag_create"; title: string }
   | { kind: "tag_update"; uuid: string; revision: string; title: string }
   | { kind: "tag_attach" | "tag_detach"; uuid: string; revision: string; noteUuid: string }
@@ -101,6 +102,8 @@ export interface SnClient {
     // (SN sidebar "folder" behavior). Off by default so existing callers
     // keep the strict direct-tag semantics.
     includeDescendants?: boolean;
+    /** Only archived (true) or only unarchived (false) notes; all when unset. */
+    archived?: boolean;
   }): Promise<NoteSummary[]>;
   stats(): Promise<VaultStats>;
   searchNotes(query: string, limit: number): Promise<NoteSummary[]>;
@@ -521,6 +524,9 @@ function toSummary(n: DecryptedNote): NoteSummary {
     trashed: n.trashed,
     protected: n.protected,
     locked: n.locked,
+    archived: n.archived,
+    pinned: n.pinned,
+    starred: n.starred,
     noteType: n.noteType,
   };
 }
@@ -551,6 +557,9 @@ function toFullNote(
     trashed: n.trashed,
     protected: n.protected,
     locked: n.locked,
+    archived: n.archived,
+    pinned: n.pinned,
+    starred: n.starred,
     tags: tagsForNote(n.uuid, tagsCache),
     noteType: n.noteType,
     ...(n.legacyUuidMismatch ? { legacyUuidMismatch: true as const } : {}),
@@ -871,6 +880,17 @@ function buildClient(state: ClientState): SnClient {
       }
       case "note_trash": content.trashed = true; break;
       case "note_restore": content.trashed = false; break;
+      case "note_flags": {
+        if (change.starred !== undefined) content.starred = change.starred;
+        if (change.archived !== undefined || change.pinned !== undefined) {
+          const appData = content.appData === undefined ? {} : objectMap(content.appData);
+          const domain = appData["org.standardnotes.sn"] === undefined ? {} : objectMap(appData["org.standardnotes.sn"]);
+          content.appData = { ...appData, "org.standardnotes.sn": { ...domain,
+            ...(change.archived !== undefined ? { archived: change.archived } : {}),
+            ...(change.pinned !== undefined ? { pinned: change.pinned } : {}) } };
+        }
+        break;
+      }
       case "tag_update": content.title = change.title; break;
       case "tag_attach":
       case "tag_detach": {
@@ -1144,7 +1164,7 @@ function buildClient(state: ClientState): SnClient {
       return outcome();
     },
 
-    async listNotes({ limit, offset, includeTrashed, tag, includeDescendants }) {
+    async listNotes({ limit, offset, includeTrashed, tag, includeDescendants, archived }) {
       await ensureFresh(state, cacheTtlMs(), () => fullSync(state));
       let allowedNoteUuids: Set<string> | null = null;
       if (tag !== undefined && tag !== "") {
@@ -1174,6 +1194,7 @@ function buildClient(state: ClientState): SnClient {
       }
       const all = [...state.notesCache.values()]
         .filter((n) => includeTrashed || !n.trashed)
+        .filter((n) => archived === undefined || n.archived === archived)
         .filter((n) => !allowedNoteUuids || allowedNoteUuids.has(n.uuid))
         .sort((a, b) => b.updated_at_timestamp - a.updated_at_timestamp);
       return all.slice(offset, offset + limit).map(toSummary);
@@ -1299,6 +1320,9 @@ function buildClient(state: ClientState): SnClient {
         trashed: false,
         protected: false,
         locked: false,
+        archived: false,
+        pinned: false,
+        starred: false,
         noteType: resolvedType,
         createdAt: saved.created_at ?? nowIso,
         updatedAt: saved.updated_at ?? nowIso,
@@ -1382,6 +1406,9 @@ function buildClient(state: ClientState): SnClient {
           trashed: false,
           protected: false,
           locked: false,
+          archived: false,
+          pinned: false,
+          starred: false,
           noteType: p.noteType,
           createdAt: saved.created_at ?? nowIso,
           updatedAt: saved.updated_at ?? nowIso,

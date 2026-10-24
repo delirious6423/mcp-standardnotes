@@ -334,6 +334,11 @@ export interface DecryptedNote {
   // Edit-lock under appData["org.standardnotes.sn"].locked — read-only flag,
   // content stays readable, only writes are forbidden.
   locked: boolean;
+  // Organisation flags as the official app stores them: archived/pinned under
+  // appData["org.standardnotes.sn"], starred at the top level.
+  archived: boolean;
+  pinned: boolean;
+  starred: boolean;
   noteType: NoteType;
   updated_at_timestamp: number;
   created_at_timestamp: number;
@@ -360,6 +365,14 @@ export function noteAccess(content: Record<string, unknown>): { protected: boole
   return { protected: content.protected === true, locked: domain.locked === true };
 }
 
+/** Display flags only; anything but literal `true` reads as false. Never a permission. */
+export function noteFlags(content: Record<string, unknown>): { archived: boolean; pinned: boolean; starred: boolean } {
+  const appData = content.appData as Record<string, unknown> | undefined;
+  const domain = (appData && typeof appData === "object" ? appData[SN_APP_DOMAIN] : undefined) as Record<string, unknown> | undefined;
+  const flag = (key: string) => Boolean(domain && typeof domain === "object" && domain[key] === true);
+  return { archived: flag("archived"), pinned: flag("pinned"), starred: content.starred === true };
+}
+
 export async function decryptNote(
   item: EncryptedItemInput,
   itemsKeyByUuid: ItemKeys,
@@ -370,6 +383,7 @@ export async function decryptNote(
     text?: string;
     trashed?: boolean;
     protected?: boolean;
+    starred?: boolean;
     appData?: Record<string, Record<string, unknown> | undefined>;
     noteType?: string;
   }>(contentJson, "note", item.uuid);
@@ -380,6 +394,7 @@ export async function decryptNote(
     text: content.text ?? "",
     trashed: content.trashed === true,
     ...access,
+    ...noteFlags(content),
     noteType: (content.noteType as NoteType | undefined) ?? "plain-text",
     createdAt: item.created_at ?? "",
     updatedAt: item.updated_at ?? "",

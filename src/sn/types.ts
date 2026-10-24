@@ -25,6 +25,9 @@ export interface NoteSummary {
   // Standard Notes' edit-lock (`appData["org.standardnotes.sn"].locked`).
   // Content stays readable — the user just said "don't modify".
   locked: boolean;
+  archived: boolean;
+  pinned: boolean;
+  starred: boolean;
   noteType: NoteType;
 }
 
@@ -37,6 +40,9 @@ export interface Note {
   trashed: boolean;
   protected: boolean;
   locked: boolean;
+  archived: boolean;
+  pinned: boolean;
+  starred: boolean;
   /** Legacy 003 note read by opt-in despite a uuid mismatch; read-only. */
   legacyUuidMismatch?: true;
   tags: string[];

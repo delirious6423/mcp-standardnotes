@@ -24,6 +24,7 @@ export const listInput = z.object({
     .describe(
       "When `tag` is set, also include notes filed under any descendant tag (SN folder behavior). Off by default.",
     ),
+  archived: z.boolean().optional().describe("true: only archived notes; false: only unarchived; unset: both"),
 });
 
 export const statsInput = z.object({});

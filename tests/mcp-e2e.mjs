@@ -181,19 +181,21 @@ try {
   const batch=await call(a,'writes_prepare_batch',{changes:[
     {kind:'tag_attach',uuid:tag.uuid,revision:tag.revision,noteUuid:createdId},
     {kind:'note_update',uuid:createdId,revision:created.revision,title:'Batch renamed'},
-    {kind:'note_trash',uuid:createdId,revision:created.revision}]});
+    {kind:'note_trash',uuid:createdId,revision:created.revision},
+    {kind:'note_flags',uuid:createdId,revision:created.revision,archived:true,pinned:true}]});
   check(batch.preview.kind==='batch' && batch.preview.items===2 && JSON.stringify(batch.preview).includes('Batch renamed'),'batch preview lists every item change');
   const batchRequests=mutationRequests;
   await call(a,'writes_commit',{operationId:batch.operationId});
   check(mutationRequests===batchRequests+1,'batch commits in one push request');
   content=await decryptItemContent(store.get(createdId),keyMap);
-  check(content.title==='Batch renamed' && content.trashed===true,'batch composes changes to one note');
+  check(content.title==='Batch renamed' && content.trashed===true && content.appData['org.standardnotes.sn'].archived===true && content.appData['org.standardnotes.sn'].pinned===true,'batch composes changes to one note');
+  check((await call(a,'notes_list',{archived:true,includeTrashed:true})).some(n=>n.uuid===createdId && n.pinned),'archived filter and flags in listings');
   check((await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(createdId),'batch attaches tag');
   check((await call(b,'writes_commit',{operationId:batch.operationId})).replay && mutationRequests===batchRequests+1,'batch replay sends nothing');
   const batchUndo=await call(b,'writes_undo_prepare',{operationId:batch.operationId});
   await call(b,'writes_commit',{operationId:batchUndo.operationId});
   content=await decryptItemContent(store.get(createdId),keyMap);
-  check(content.title==='Timeout test' && !content.trashed && !(await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(createdId),'batch undo restores every item');
+  check(content.title==='Timeout test' && !content.trashed && !content.appData?.['org.standardnotes.sn']?.archived && !(await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(createdId),'batch undo restores every item');
   await rejected(a,'writes_prepare',{change:{kind:'note_trash',uuid:noteId,revision,permanent:true}});
   await rejected(a,'writes_prepare',{change:{kind:'recovery',uuid:noteId,revision}});
   const declined=await call(a,'writes_prepare',{change:{kind:'note_create',title:'Reject test',text:'Do not write'}});

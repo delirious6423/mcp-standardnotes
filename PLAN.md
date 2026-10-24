@@ -12,7 +12,7 @@ every write previewed and approved by a human, reversible where Standard Notes a
 
 ## Next (in order)
 - [x] Rewrite the README for this fork.
-- [ ] Archive, pin and star changes (`note_archive`, `note_unarchive`, `note_pin`, `note_unpin`, `note_star`, `note_unstar`).
+- [x] Archive, pin and star: `note_flags` change, flags in reads, `archived` filter on `notes_list`.
 - [ ] Nested tags: create/move a tag under a parent; attach a tag created earlier in the same batch.
 - [ ] One synced client per server process with delta sync, and a global back-off after HTTP 429.
 - [ ] Merge as one reviewable change (combined note plus trashing the sources).

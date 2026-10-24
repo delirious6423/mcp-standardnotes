@@ -26,7 +26,7 @@ has been inactive since August 2026. It differs from upstream in what it allows:
 
 | Tool | Purpose |
 |---|---|
-| `notes_list`, `notes_search`, `notes_get`, `notes_stats` | Browse, search (title/body, optional tag filter) and summarize the vault |
+| `notes_list`, `notes_search`, `notes_get`, `notes_stats` | Browse (filter by tag or archived state), search and summarize the vault |
 | `notes_get_batch` | Read up to 200 notes with one sync |
 | `tags_list`, `tags_get` | Browse tags and their notes |
 | `writes_prepare` | Preview one change |
@@ -36,7 +36,7 @@ has been inactive since August 2026. It differs from upstream in what it allows:
 | `writes_undo_prepare` | Preview the undo of a committed operation |
 
 Change kinds: `note_create`, `note_update` (rename, replace or append text), `note_trash`, `note_restore`,
-`tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Body edits support plain text and Markdown;
+`note_flags` (archive, pin, star or undo them), `tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Body edits support plain text and Markdown;
 other note types can be renamed, tagged or trashed without touching their body.
 
 ## How a write works
@@ -145,7 +145,7 @@ Details: [docs/protocol-004.md](docs/protocol-004.md) and [SECURITY.md](SECURITY
 - Each tool call currently syncs the whole vault, so many single calls in a row can hit the server's rate
   limit (HTTP 429, about an hour). Use `notes_get_batch` and `writes_prepare_batch` for bulk work.
 - A tag created in a batch can't be attached in that same batch; attach it in the next one.
-- No archive/pin/star or nested-tag changes yet, and no tag deletion (by design).
+- No nested-tag changes yet, and no tag deletion (by design).
 - Structured note types (Super, checklists, spreadsheets) can't have their body rewritten.
 
 Planned work: [PLAN.md](PLAN.md).

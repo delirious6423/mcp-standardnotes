@@ -562,6 +562,42 @@ describe("batch writes", () => {
     expect(await decryptItemContent(server.get(plans[1]!.after.uuid)!, keys)).toMatchObject({ trashed: true });
   });
 
+  it("archives, pins and stars where the official app stores them, previews only those fields, and undoes", async () => {
+    await put(note2, "Note", { title: "Second", text: "Two", noteType: "plain-text",
+      appData: { "org.standardnotes.sn": { prefersPlainEditor: true }, "com.example": { keep: 1 } } });
+    client = await createClientFromSession(config);
+    const { plans, preview } = await client.prepareChanges([
+      { kind: "note_flags", uuid: note2, revision: await revision(note2), archived: true, pinned: true },
+      { kind: "note_trash", uuid: note2, revision: await revision(note2) },
+      { kind: "note_flags", uuid: note3, revision: await revision(note3), starred: true },
+    ]);
+    expect(preview.counts).toEqual({ note_flags: 2, note_trash: 1 });
+    expect(preview.plan[0]!.changes).toEqual({
+      "appData.org.standardnotes.sn.archived": { from: null, to: true },
+      "appData.org.standardnotes.sn.pinned": { from: null, to: true },
+      trashed: { from: null, to: true },
+    });
+    expect(preview.plan[1]!.changes).toEqual({ starred: { from: null, to: true } });
+    expect((await client.commitChanges(plans)).unconfirmed).toEqual([]);
+    const second = await decryptItemContent(server.get(note2)!, keys);
+    expect(second).toMatchObject({ trashed: true, appData: { "com.example": { keep: 1 },
+      "org.standardnotes.sn": { prefersPlainEditor: true, archived: true, pinned: true } } });
+    expect(await decryptItemContent(server.get(note3)!, keys)).toMatchObject({ starred: true });
+    expect((await client.listNotes({ limit: 50, offset: 0, includeTrashed: true, archived: true })).map((n) => n.uuid)).toEqual([note2]);
+    expect((await client.listNotes({ limit: 50, offset: 0, includeTrashed: true, archived: false })).map((n) => n.uuid)).not.toContain(note2);
+    expect(await client.getNoteWithRevision(note3)).toMatchObject({ starred: true, archived: false, pinned: false });
+    const undo = await client.prepareRecoveries(plans);
+    await client.commitChanges(undo.plans);
+    expect(await decryptItemContent(server.get(note2)!, keys)).toEqual({ title: "Second", text: "Two", noteType: "plain-text",
+      appData: { "org.standardnotes.sn": { prefersPlainEditor: true }, "com.example": { keep: 1 } } });
+  });
+
+  it("reads malformed organisation flags as false instead of failing", async () => {
+    await put(note2, "Note", { title: "Odd", text: "x", starred: "yes", appData: { "org.standardnotes.sn": { archived: 1, pinned: "true" } } });
+    client = await createClientFromSession(config);
+    expect(await client.getNoteWithRevision(note2)).toMatchObject({ archived: false, pinned: false, starred: false });
+  });
+
   it("reads many notes with revisions from one sync and withholds protected notes", async () => {
     await edit(note3, { protected: true });
     mocks.sync.mockClear();

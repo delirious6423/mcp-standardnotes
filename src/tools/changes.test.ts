@@ -17,6 +17,16 @@ describe("safe change boundary",()=>{
       {kind:"note_create",title:"t",text:"b",noteType:"super"},
     ]) expect(changeInput.safeParse(value).success).toBe(false);
   });
+  it("accepts note_flags only with at least one boolean flag",()=>{
+    expect(changeInput.safeParse({kind:"note_flags",uuid,revision,archived:true}).success).toBe(true);
+    expect(changeInput.safeParse({kind:"note_flags",uuid,revision,pinned:false,starred:true}).success).toBe(true);
+    for(const value of [
+      {kind:"note_flags",uuid,revision},
+      {kind:"note_flags",uuid,revision,archived:"yes"},
+      {kind:"note_flags",uuid,revision,archived:true,locked:false},
+      {kind:"note_flags",uuid,archived:true},
+    ]) expect(changeInput.safeParse(value).success).toBe(false);
+  });
   it("validates UTF-8 bytes and strict operation IDs",()=>{
     expect(changeInput.safeParse({kind:"note_create",title:"t",text:"😀".repeat(3*1024*1024)}).success).toBe(false);
     expect(operationInput.safeParse({operationId:"../../escape"}).success).toBe(false);
