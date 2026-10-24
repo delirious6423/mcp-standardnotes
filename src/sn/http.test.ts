@@ -56,7 +56,7 @@ describe("snFetch (via getLoginParams)", () => {
     );
 
     const ua = lastRequestHeaders().get("User-Agent");
-    expect(ua).toMatch(/^mcp-standardnotes\/\d+\.\d+\.\d+$/);
+    expect(ua).toMatch(/^standardnotes-safe-mcp\/\d+\.\d+\.\d+$/);
     expect(ua).not.toMatch(/Mozilla|Chrome|Safari/);
   });
 
@@ -70,7 +70,7 @@ describe("snFetch (via getLoginParams)", () => {
     );
 
     expect(lastRequestHeaders().get("X-Client")).toMatch(
-      /^mcp-standardnotes\/\d+\.\d+\.\d+$/,
+      /^standardnotes-safe-mcp\/\d+\.\d+\.\d+$/,
     );
   });
 
@@ -115,7 +115,7 @@ describe("snFetch (via getLoginParams)", () => {
     headers = lastRequestHeaders();
     expect(headers.get("Origin")).toBeNull();
     expect(headers.get("Referer")).toBeNull();
-    expect(headers.get("X-Client")).toMatch(/^mcp-standardnotes\//);
+    expect(headers.get("X-Client")).toMatch(/^standardnotes-safe-mcp\//);
   });
 
   it("surfaces a body snippet when the response is not JSON (e.g. Cloudflare 403)", async () => {

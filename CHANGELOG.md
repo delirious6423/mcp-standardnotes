@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-10-25 (fork: standardnotes-safe-mcp)
+
+First release line of this fork; not published to npm or the MCP Registry.
+
+### Changed
+
+- Writes are two-step: `writes_prepare` / `writes_prepare_batch` return a preview, the user approves it with
+  `standardnotes-mcp approve <operationId>` in their own terminal, and `writes_commit` sends it. Every committed
+  operation can be undone from an encrypted journal. Upstream's direct write tools (`notes_create`,
+  `notes_update`, `notes_delete`, `tags_*` writes) are gone; nothing can permanently delete.
+- One synced client per server process: calls after the first send delta syncs. After HTTP 429 every process
+  for the account waits out `Retry-After` without sending.
+- Package renamed to `standardnotes-safe-mcp` (User-Agent and MCP server name follow); the keychain service
+  stays `mcp-standardnotes`, so existing logins keep working.
+
+### Added
+
+- Batches of up to 200 changes under one approval; `notes_get_batch`.
+- `note_flags` (archive, pin, star), nested tags inside one batch, `note_merge`.
+- Read-only support for legacy protocol 003 items in upgraded accounts.
+
+### Removed
+
+- npm / MCP Registry publishing (`server.json`, `publish-mcp.yml`, `scripts/release.sh`, `docs/RELEASE.md`) and
+  the remote-agent bridge guide, which described upstream's tools.
+
 ## [0.6.0] — 2026-08-06
 
 ### Added

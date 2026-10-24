@@ -1,17 +1,18 @@
 {
-  "name": "mcp-standardnotes",
-  "version": "0.6.0",
-  "description": "MCP server giving Claude end-to-end encrypted access to a Standard Notes vault (protocol 004, local stdio only)",
+  "name": "standardnotes-safe-mcp",
+  "version": "0.7.0",
+  "private": true,
+  "description": "MCP server for a Standard Notes vault with previewed, terminal-approved, undoable writes (end-to-end encrypted, local stdio only)",
   "license": "MIT",
   "author": "Guillaume Ferrari",
-  "mcpName": "io.github.lozit/mcp-standardnotes",
-  "homepage": "https://github.com/lozit/mcp-standardnotes#readme",
+  "contributors": ["delirious6423"],
+  "homepage": "https://github.com/delirious6423/mcp-standardnotes#readme",
   "bugs": {
-    "url": "https://github.com/lozit/mcp-standardnotes/issues"
+    "url": "https://github.com/delirious6423/mcp-standardnotes/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lozit/mcp-standardnotes.git"
+    "url": "git+https://github.com/delirious6423/mcp-standardnotes.git"
   },
   "keywords": [
     "mcp",

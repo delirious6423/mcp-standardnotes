@@ -12,8 +12,8 @@ Thanks for your interest! This project is small and opinionated — please read 
 ## Setup
 
 ```bash
-git clone https://github.com/lozit/mcp-standardnotes.git
-cd mcp-standardnotes
+git clone https://github.com/delirious6423/mcp-standardnotes.git standardnotes-mcp
+cd standardnotes-mcp
 npm install
 ```
 

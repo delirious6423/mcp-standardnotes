@@ -1,6 +1,6 @@
 # Security Policy
 
-`mcp-standardnotes` gives an AI assistant end-to-end-encrypted access to a
+`standardnotes-safe-mcp` gives an AI assistant end-to-end-encrypted access to a
 Standard Notes vault. Security is the whole point of the project, so this
 document states the posture explicitly and explains how to report problems.
 
@@ -9,7 +9,7 @@ document states the posture explicitly and explains how to report problems.
 **Please do not open a public issue for security problems.**
 
 Use GitHub's private vulnerability reporting:
-[**Report a vulnerability**](https://github.com/lozit/mcp-standardnotes/security/advisories/new)
+[**Report a vulnerability**](https://github.com/delirious6423/mcp-standardnotes/security/advisories/new)
 (the *Security → Advisories* tab on the repository). Include the version, your
 platform, and a minimal reproduction.
 
@@ -71,7 +71,7 @@ scanners; here is the full, honest accounting so the report isn't a mystery:
 
 > **Note on `overrides`.** npm only honours a package's `overrides` field for the
 > project where it is the *root*. They do **not** propagate to consumers who
-> install `mcp-standardnotes` as a dependency. The `overrides` in this repo
+> install this package as a dependency. The `overrides` in this repo
 > therefore harden our own CI/build tree; they are not a substitute for upstream
 > fixes in the resolved dependency tree of an end user. The real lever for the
 > transitive moderates above is the upstream SDK, which we track.

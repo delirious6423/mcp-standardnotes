@@ -6,7 +6,7 @@ import { redactString } from "../security/redact.js";
 import type { KeyParams004 } from "./protocol004.js";
 
 const require = createRequire(import.meta.url);
-const { version: PKG_VERSION } = require("../../package.json") as {
+export const { version: PKG_VERSION } = require("../../package.json") as {
   version: string;
 };
 
@@ -24,7 +24,7 @@ const { version: PKG_VERSION } = require("../../package.json") as {
 // a header we're not sending, or a stricter version floor in X-SNJS-Version
 // / X-Application-Version) by comparing against upstream github.com/
 // jonhadfield/gosn-v2 (common/client_headers.go).
-const HONEST_UA = `mcp-standardnotes/${PKG_VERSION}`;
+const HONEST_UA = `standardnotes-safe-mcp/${PKG_VERSION}`;
 const X_CLIENT = HONEST_UA;
 
 // Standard Notes' api-gateway (since ~2026-05) rejects any request missing
