@@ -7,13 +7,14 @@ import { WriteJournal } from "../security/write-journal.js";
 import { recoveryKey, resolveEmail } from "../sn/session.js";
 import { renderPreview, visible } from "./render-preview.js";
 import { configureStateDirectory } from "../config.js";
+import { serverUrl } from "../sn/server-url.js";
 
 async function main(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Approval requires your interactive terminal, not piped input");
   const args = process.argv.slice(2);
   const json = args.includes("--json");
   const id = z.string().uuid().parse(args.find((a) => a !== "--json"));
-  const server = process.env.SN_SERVER_URL ?? "https://api.standardnotes.com";
+  const server = serverUrl();
   const base = await configureStateDirectory();
   const dir = accountDirectory(base, server, await resolveEmail(server));
   await privateDirectory(base);

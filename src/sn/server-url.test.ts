@@ -12,4 +12,9 @@ describe("transport configuration",()=>{
   vi.stubEnv("SN_SERVER_URL","http://127.0.0.1:1234");expect(()=>serverUrl()).toThrow();
   vi.stubEnv("SN_ALLOW_LOCAL_TEST_SERVER","1");expect(serverUrl()).toBe("http://127.0.0.1:1234");
  });
+  it("treats an empty SN_SERVER_URL as unset", () => {
+    vi.stubEnv("SN_SERVER_URL", "");
+    expect(serverUrl()).toBe("https://api.standardnotes.com");
+    vi.unstubAllEnvs();
+  });
 });

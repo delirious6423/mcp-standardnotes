@@ -84,6 +84,10 @@ function sameCiphertext(a: http.RawItem, b: http.RawItem): boolean {
 }
 
 export interface SnClient {
+  /** Tokens in use. The keychain is the shared source of truth between processes. */
+  sessionTokens(): { access: string; refresh: string };
+  /** Use tokens another process rotated, before the next request. */
+  adoptTokens(access: string, refresh: string): void;
   prepareChange(change: SafeChange): Promise<PreparedChange>;
   commitChange(plan: PreparedChange, options?: { reconcileOnly?: boolean; signal?: AbortSignal }): Promise<void>;
   getRevision(uuid: string): Promise<string>;
@@ -1062,6 +1066,15 @@ function buildClient(state: ClientState): SnClient {
   };
 
   return {
+    sessionTokens() {
+      return { access: state.authToken, refresh: state.refreshToken };
+    },
+
+    adoptTokens(access, refresh) {
+      state.authToken = access;
+      state.refreshToken = refresh;
+    },
+
     async getNoteWithRevision(uuid) {
       await fullSync(state);
       const raw = state.encryptedItemsRaw.get(uuid);

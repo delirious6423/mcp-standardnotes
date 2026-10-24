@@ -6,7 +6,7 @@ import { configureStateDirectory } from "../config.js";
 
 async function main(): Promise<void> {
   const server = serverUrl();
-  const email = process.env.SN_EMAIL ?? process.argv[2] ?? await resolveEmail(server);
+  const email = process.env.SN_EMAIL || process.argv[2] || await resolveEmail(server);
   const base = await configureStateDirectory();
   const dir = accountDirectory(base, server, email);
   await privateDirectory(base);

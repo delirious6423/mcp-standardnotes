@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 import keytar from "keytar";
 
-const KEYCHAIN_SERVICE = process.env.KEYCHAIN_SERVICE ?? "mcp-standardnotes";
+const KEYCHAIN_SERVICE = process.env.KEYCHAIN_SERVICE || "mcp-standardnotes";
 
 type Target = "desktop" | "code";
 

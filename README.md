@@ -156,8 +156,10 @@ Details: [docs/protocol-004.md](docs/protocol-004.md) and [SECURITY.md](SECURITY
 
 ## Known limits
 
-- Each tool call currently syncs the whole vault, so many single calls in a row can hit the server's rate
-  limit (HTTP 429, about an hour). Use `notes_get_batch` and `writes_prepare_batch` for bulk work.
+- The first call in a server process downloads the vault; later calls send only changes since then, and
+  each commit re-reads the vault from scratch to confirm what landed. If the server still rate-limits
+  (HTTP 429), every process for that account pauses for the server's `Retry-After` (at most 2 hours)
+  and says so instead of retrying. Prefer `notes_get_batch` and `writes_prepare_batch` for bulk work.
 - No tag deletion (by design); remove unwanted tags in the official app.
 - Structured note types (Super, checklists, spreadsheets) can't have their body rewritten.
 

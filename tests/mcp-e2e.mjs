@@ -30,7 +30,7 @@ const store = new Map([
   [keyId,raw(keyId,'SN|ItemsKey',await encryptString(JSON.stringify({itemsKey:hex(itemsKey),version:'004'}),wrapping,aad(keyId)),await encryptString(hex(wrapping),root,{...aad(keyId),kp}))],
   [noteId,raw(noteId,'Note',await encryptString(JSON.stringify(original),perItem,aad(noteId)),await encryptString(hex(perItem),itemsKey,aad(noteId)),keyId)],
 ]);
-let writes=0, mutationRequests=0, dropNextWrite=false, delayReads=0;
+let writes=0, mutationRequests=0, dropNextWrite=false, delayReads=0, fromScratch=0, itemRequests=0, rateLimitNext=0;
 let access='synthetic-access-0', refresh='synthetic-refresh-0', refreshed=0;
 const api = http.createServer(async(req,res)=>{
   try {
@@ -44,6 +44,9 @@ const api = http.createServer(async(req,res)=>{
       res.end(JSON.stringify({data:{access_token:access,refresh_token:refresh,access_expiration:0,refresh_expiration:0}})); return;
     }
     assert.equal(req.url,'/v1/items');
+    itemRequests++;
+    if(rateLimitNext) {res.statusCode=429;res.setHeader('Retry-After',String(rateLimitNext));rateLimitNext=0;res.end(JSON.stringify({error:{message:'slow down'}}));return;}
+    if(!input.sync_token && !input.cursor_token && !(input.items?.length))fromScratch++;
     if(req.headers.authorization!==`Bearer ${access}`) {
       res.statusCode=401;res.end(JSON.stringify({error:{message:'expired'}}));return;
     }
@@ -218,6 +221,20 @@ try {
   await call(a,'notes_list',{});
   await call(b,'notes_list',{});
   check(refreshed===1,'two clients share refreshed session safely');
+  // One client per process: further reads are delta syncs, not full downloads.
+  const scratch=fromScratch;
+  for(let i=0;i<3;i++) await call(a,'notes_get',{uuid:noteId});
+  check(fromScratch===scratch,'repeat reads in one process never re-download the vault');
+  // A 429 blocks every process for this account until Retry-After, without sending requests.
+  rateLimitNext=2;
+  await rejected(a,'notes_get',{uuid:noteId});
+  const sent=itemRequests;
+  await rejected(b,'notes_get',{uuid:noteId});
+  await rejected(a,'notes_list',{});
+  check(itemRequests===sent,'rate-limited processes send nothing while waiting');
+  await new Promise(r=>setTimeout(r,2200));
+  await call(b,'notes_get',{uuid:noteId});
+  check(itemRequests>sent,'requests resume after Retry-After');
   // Force overlap: second client fails busy, then succeeds after first releases lock.
   delayReads=100;
   const pending=call(a,'notes_list',{});

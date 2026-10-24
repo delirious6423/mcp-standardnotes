@@ -410,6 +410,22 @@ describe("bounded safe writes", () => {
   });
 });
 
+describe("incremental sync", () => {
+  it("syncs from the saved token after the first full sync, and the commit read-back starts from scratch", async () => {
+    mocks.sync.mockClear();
+    await client.getNoteWithRevision(noteUuid);
+    await client.getNoteWithRevision(noteUuid);
+    const tokens = () => mocks.sync.mock.calls.map((call) => (call[1] as { syncToken?: string; items?: unknown[] }));
+    expect(tokens().every((p) => p.syncToken === "token")).toBe(true);
+    const plan = await client.prepareChange({ kind: "note_trash", uuid: noteUuid, revision: await revision() });
+    mocks.sync.mockClear();
+    await client.commitChange(plan);
+    const reads = tokens().filter((p) => !p.items?.length);
+    expect(reads[0]!.syncToken).toBe("token");
+    expect(reads.at(-1)!.syncToken).toBeUndefined();
+  });
+});
+
 describe("batch writes", () => {
   const note2 = "55555555-5555-4555-8555-555555555555";
   const note3 = "66666666-6666-4666-8666-666666666666";

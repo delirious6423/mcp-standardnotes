@@ -1,7 +1,7 @@
 import keytar from "keytar";
 import { randomBytes } from "node:crypto";
 
-const SERVICE = process.env.KEYCHAIN_SERVICE ?? "mcp-standardnotes";
+const SERVICE = process.env.KEYCHAIN_SERVICE || "mcp-standardnotes";
 
 export interface StoredSession {
   serverUrl: string;
