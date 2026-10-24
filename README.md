@@ -36,8 +36,22 @@ has been inactive since August 2026. It differs from upstream in what it allows:
 | `writes_undo_prepare` | Preview the undo of a committed operation |
 
 Change kinds: `note_create`, `note_update` (rename, replace or append text), `note_trash`, `note_restore`,
-`note_flags` (archive, pin, star or undo them), `tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Body edits support plain text and Markdown;
+`note_flags` (archive, pin, star or undo them), `tag_create` (optionally under a parent), `tag_update` (rename or
+move, `parent: null` for top level), `tag_attach`, `tag_detach`. Body edits support plain text and Markdown;
 other note types can be renamed, tagged or trashed without touching their body.
+
+A batch can build a whole tag tree: name a new tag with `ref`, then use it as a parent or attach notes to it.
+
+```json
+{ "changes": [
+  { "kind": "tag_create", "title": "Work", "ref": "@work" },
+  { "kind": "tag_create", "title": "NVIDIA", "parent": "@work", "ref": "@nv" },
+  { "kind": "tag_attach", "uuid": "@nv", "noteUuid": "<note uuid>" },
+  { "kind": "tag_update", "uuid": "<tag uuid>", "revision": "<revision>", "parent": "@work" }
+] }
+```
+
+Moves that would make a tag its own ancestor are refused.
 
 ## How a write works
 
@@ -144,8 +158,7 @@ Details: [docs/protocol-004.md](docs/protocol-004.md) and [SECURITY.md](SECURITY
 
 - Each tool call currently syncs the whole vault, so many single calls in a row can hit the server's rate
   limit (HTTP 429, about an hour). Use `notes_get_batch` and `writes_prepare_batch` for bulk work.
-- A tag created in a batch can't be attached in that same batch; attach it in the next one.
-- No nested-tag changes yet, and no tag deletion (by design).
+- No tag deletion (by design); remove unwanted tags in the official app.
 - Structured note types (Super, checklists, spreadsheets) can't have their body rewritten.
 
 Planned work: [PLAN.md](PLAN.md).

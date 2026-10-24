@@ -35,7 +35,7 @@ function field(name: string, from: unknown, to: unknown, indent: string): string
   if (name === "references" && isObj(to) && Array.isArray(to.added) && Array.isArray(to.removed)) {
     const ref = (sign: string, r: unknown) => {
       const o = isObj(r) ? r : {};
-      return `${indent}  ${sign} ${visible(String(o.type ?? "?"))} ${o.title === undefined ? "(untitled or protected)" : value(o.title, indent)} ${visible(String(o.uuid ?? "?"))}`;
+      return `${indent}  ${sign} ${o.relation === "parent" ? "parent " : ""}${visible(String(o.type ?? "?"))} ${o.title === undefined ? "(untitled or protected)" : value(o.title, indent)} ${visible(String(o.uuid ?? "?"))}`;
     };
     return [`${indent}references:`, ...to.added.map((r) => ref("+", r)), ...to.removed.map((r) => ref("-", r))];
   }

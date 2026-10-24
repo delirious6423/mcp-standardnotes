@@ -173,6 +173,17 @@ try {
   await call(b,'writes_commit',{operationId:attach.operationId});
   tag=await call(a,'tags_get',{uuid:tag.uuid});
   check(tag.noteUuids.includes(noteId),'tag attachment');
+  const tree=await call(a,'writes_prepare_batch',{changes:[
+    {kind:'tag_create',title:'Parent',ref:'@p'},
+    {kind:'tag_create',title:'Child',parent:'@p',ref:'@c'},
+    {kind:'tag_attach',uuid:'@c',noteUuid:noteId},
+    {kind:'tag_update',uuid:tag.uuid,revision:tag.revision,parent:'@p'}]});
+  await call(a,'writes_commit',{operationId:tree.operationId});
+  const listed=await call(a,'tags_list',{});
+  const parentTag=listed.find(t=>t.title==='Parent'), childTag=listed.find(t=>t.title==='Child');
+  check(childTag?.parentUuid===parentTag?.uuid && listed.find(t=>t.uuid===tag.uuid)?.parentUuid===parentTag?.uuid,'nested tags built and moved in one batch');
+  check((await call(a,'tags_get',{uuid:childTag.uuid})).noteUuids.includes(noteId),'note attached to a tag created in the same batch');
+  tag=await call(a,'tags_get',{uuid:tag.uuid});
   // Batch: one approval, one push request, item-level composition, replay and whole-batch undo.
   const createdId=(await call(b,'writes_status',{operationId:create.operationId})).uuid;
   const many=await call(a,'notes_get_batch',{uuids:[noteId,createdId]});

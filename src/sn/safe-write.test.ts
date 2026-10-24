@@ -598,6 +598,66 @@ describe("batch writes", () => {
     expect(await client.getNoteWithRevision(note2)).toMatchObject({ archived: false, pinned: false, starred: false });
   });
 
+  it("builds a nested tag tree in one batch, attaches notes to new tags and moves an existing tag", async () => {
+    const tagRev = await revision(tagUuid);
+    const { plans, preview } = await client.prepareChanges([
+      { kind: "tag_create", title: "Work", ref: "@work" },
+      { kind: "tag_create", title: "NVIDIA", parent: "@work", ref: "@nv" },
+      { kind: "tag_attach", uuid: "@nv", noteUuid },
+      { kind: "tag_attach", uuid: "@nv", noteUuid: note2 },
+      { kind: "tag_update", uuid: tagUuid, revision: tagRev, title: "Archive", parent: "@work" },
+    ]);
+    const [work, nv, moved] = plans.map((p) => p.after.uuid);
+    expect(moved).toBe(tagUuid);
+    expect(preview.plan[1]!.changes.references).toEqual({ removed: [], added: [
+      { uuid: work, type: "Tag", title: "Work", relation: "parent" },
+      { uuid: noteUuid, type: "Note", title: "Original" }, { uuid: note2, type: "Note", title: "Second" }] });
+    expect(preview.plan[2]!.changes.references).toEqual({ removed: [], added: [{ uuid: work, type: "Tag", title: "Work", relation: "parent" }] });
+    expect((await client.commitChanges(plans)).unconfirmed).toEqual([]);
+    const parentRef = { uuid: work, content_type: "Tag", reference_type: "TagToParentTag" };
+    expect((await decryptItemContent(server.get(nv!)!, keys)).references).toEqual([parentRef,
+      { uuid: noteUuid, content_type: "Note" }, { uuid: note2, content_type: "Note" }]);
+    expect(await decryptItemContent(server.get(tagUuid)!, keys)).toMatchObject({ title: "Archive", references: [parentRef] });
+    const tags = await client.listTags();
+    expect(tags.find((t) => t.uuid === nv)?.parentUuid).toBe(work);
+    expect(tags.find((t) => t.uuid === tagUuid)?.parentUuid).toBe(work);
+
+    // Back to the top level keeps note links; undo keeps created tags and restores the moved one.
+    const top = await client.prepareChanges([{ kind: "tag_update", uuid: nv!, revision: await revision(nv), parent: null }]);
+    await client.commitChanges(top.plans);
+    expect((await decryptItemContent(server.get(nv!)!, keys)).references).toEqual([
+      { uuid: noteUuid, content_type: "Note" }, { uuid: note2, content_type: "Note" }]);
+    const undo = await client.prepareRecoveries(plans);
+    expect(undo.skipped.map((s) => s.reason)).toEqual(["tag_create", "tag_create"]);
+    await client.commitChanges(undo.plans);
+    expect(await decryptItemContent(server.get(tagUuid)!, keys)).toEqual({ title: "Tag", references: [] });
+  });
+
+  it("refuses tag cycles, unknown or duplicate refs, missing parents and protected notes on new tags", async () => {
+    const setup = await client.prepareChanges([{ kind: "tag_create", title: "A", ref: "@a" }, { kind: "tag_create", title: "B", parent: "@a" }]);
+    await client.commitChanges(setup.plans);
+    const [a, b] = setup.plans.map((p) => p.after.uuid) as [string, string];
+    await expect(client.prepareChanges([{ kind: "tag_update", uuid: a, revision: await revision(a), parent: b }])).rejects.toThrow(/own ancestor/);
+    await expect(client.prepareChanges([{ kind: "tag_update", uuid: a, revision: await revision(a), parent: a }])).rejects.toThrow(/own ancestor/);
+    await expect(client.prepareChanges([{ kind: "tag_create", title: "C", parent: b, ref: "@c" },
+      { kind: "tag_update", uuid: a, revision: await revision(a), parent: "@c" }])).rejects.toThrow(/own ancestor/);
+    await expect(client.prepareChanges([{ kind: "tag_attach", uuid: "@later", noteUuid }, { kind: "tag_create", title: "L", ref: "@later" }])).rejects.toThrow(/Unknown tag @later/);
+    await expect(client.prepareChanges([{ kind: "tag_create", title: "X", ref: "@x" }, { kind: "tag_create", title: "Y", ref: "@x" }])).rejects.toThrow(/used twice/);
+    await expect(client.prepareChanges([{ kind: "tag_create", title: "Z", parent: note2 }])).rejects.toThrow(/Parent tag .* not found/);
+    await expect(client.prepareChanges([{ kind: "tag_detach", uuid: "@x", revision: "r", noteUuid }])).rejects.toThrow(/Only tag_attach/);
+    await put(note3, "Note", { title: "Secret", text: "s", protected: true });
+    client = await createClientFromSession(config);
+    await expect(client.prepareChanges([{ kind: "tag_create", title: "P", ref: "@p" }, { kind: "tag_attach", uuid: "@p", noteUuid: note3 }])).rejects.toThrow(/protected/);
+    expect(writes).toHaveLength(1);
+  });
+
+  it("rechecks notes attached to a new tag at commit and sends nothing if one became protected", async () => {
+    const { plans } = await client.prepareChanges([{ kind: "tag_create", title: "T", ref: "@t" }, { kind: "tag_attach", uuid: "@t", noteUuid: note2 }]);
+    await edit(note2, { protected: true });
+    await expect(client.commitChanges(plans)).rejects.toThrow(/protected/);
+    expect(writes).toHaveLength(0);
+  });
+
   it("reads many notes with revisions from one sync and withholds protected notes", async () => {
     await edit(note3, { protected: true });
     mocks.sync.mockClear();

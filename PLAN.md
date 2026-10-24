@@ -13,7 +13,7 @@ every write previewed and approved by a human, reversible where Standard Notes a
 ## Next (in order)
 - [x] Rewrite the README for this fork.
 - [x] Archive, pin and star: `note_flags` change, flags in reads, `archived` filter on `notes_list`.
-- [ ] Nested tags: create/move a tag under a parent; attach a tag created earlier in the same batch.
+- [x] Nested tags: `parent` on tag_create/tag_update, `@ref` names for tags created in the same batch, cycle checks; parent links match the official app (`content_type: "Tag"`).
 - [ ] One synced client per server process with delta sync, and a global back-off after HTTP 429.
 - [ ] Merge as one reviewable change (combined note plus trashing the sources).
 - [ ] Own identity: rename the package and server id; disable the inherited npm/MCP Registry publish workflow.

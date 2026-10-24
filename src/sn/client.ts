@@ -46,9 +46,13 @@ export type SafeChange =
   | { kind: "note_update"; uuid: string; revision: string; title?: string; text?: string; append?: string }
   | { kind: "note_trash" | "note_restore"; uuid: string; revision: string }
   | { kind: "note_flags"; uuid: string; revision: string; archived?: boolean; pinned?: boolean; starred?: boolean }
-  | { kind: "tag_create"; title: string }
-  | { kind: "tag_update"; uuid: string; revision: string; title: string }
-  | { kind: "tag_attach" | "tag_detach"; uuid: string; revision: string; noteUuid: string }
+  // `ref` names a tag created in this batch ("@travel"); later changes may use it as a tag uuid or parent.
+  | { kind: "tag_create"; title: string; parent?: string; ref?: string }
+  // `parent`: tag uuid or "@ref" to nest under, null to move to the top level.
+  | { kind: "tag_update"; uuid: string; revision: string; title?: string; parent?: string | null }
+  // `uuid` may be "@ref" (a tag created earlier in this batch); then there is no revision.
+  | { kind: "tag_attach"; uuid: string; revision?: string; noteUuid: string }
+  | { kind: "tag_detach"; uuid: string; revision: string; noteUuid: string }
   | { kind: "recovery"; uuid: string; revision: string };
 
 type CreateChange = Extract<SafeChange, { kind: "note_create" | "tag_create" }>;
@@ -794,8 +798,8 @@ function buildClient(state: ClientState): SnClient {
     return value as Record<string, unknown>;
   };
 
-  const writableTagTargets = async (before: http.RawItem, after: http.RawItem): Promise<void> => {
-    const oldContent = await decryptItemContent(before, contentKeys());
+  const writableTagTargets = async (before: http.RawItem | null, after: http.RawItem): Promise<void> => {
+    const oldContent = before ? await decryptItemContent(before, contentKeys()) : {};
     const newContent = await decryptItemContent(after, contentKeys());
     const noteTargets = (value: unknown): Set<string> => {
       if (value !== undefined && !Array.isArray(value)) throw new Error("Malformed tag references");
@@ -821,13 +825,13 @@ function buildClient(state: ClientState): SnClient {
 
   const noteTitle = (uuid: string): string | undefined => {
     const note = state.notesCache.get(uuid);
-    return note && !note.protected ? note.title : undefined;
+    return note && !note.protected ? note.title : state.tagsCache.get(uuid)?.title;
   };
 
   // One plan per target item from the current snapshot; callers sync first. Several changes to
   // the same item compose in order into one write, and all must cite the same current revision.
-  const planCreate = async (change: CreateChange, now: string): Promise<PreparedChange> => {
-    const uuid = crypto.randomUUID();
+  const planCreate = async (change: CreateChange, now: string, uuid: string = crypto.randomUUID(),
+    tagRefs: TagReference[] = []): Promise<PreparedChange> => {
     const key = defaultItemsKey();
     const note = change.kind === "note_create";
     if (note && change.noteType !== undefined &&
@@ -840,7 +844,7 @@ function buildClient(state: ClientState): SnClient {
     const encrypted = change.kind === "note_create"
       ? await encryptNote({ uuid, title: change.title, text: change.text,
           noteType: change.noteType ?? "plain-text" }, key)
-      : await encryptTag({ uuid, title: change.title, references: [] }, key);
+      : await encryptTag({ uuid, title: change.title, references: tagRefs }, key);
     const after: http.RawItem = { uuid, content_type: note ? "Note" : "Tag", ...encrypted,
       created_at: now, updated_at: now, created_at_timestamp: 0,
       updated_at_timestamp: 0, deleted: false };
@@ -891,7 +895,17 @@ function buildClient(state: ClientState): SnClient {
         }
         break;
       }
-      case "tag_update": content.title = change.title; break;
+      case "tag_update": {
+        if (change.title !== undefined) content.title = change.title;
+        if (change.parent !== undefined) {
+          if (content.references !== undefined && !Array.isArray(content.references)) throw new Error("Malformed tag references");
+          // Same as the official app's makeChildOf/unsetParent: replace only the parent link.
+          const refs = ((content.references ?? []) as unknown[]).filter((ref) =>
+            !(ref && typeof ref === "object" && (ref as Record<string, unknown>).reference_type === "TagToParentTag"));
+          content.references = change.parent === null ? refs : [...refs, makeParentRef(change.parent)];
+        }
+        break;
+      }
       case "tag_attach":
       case "tag_detach": {
         if (content.references !== undefined && !Array.isArray(content.references)) {
@@ -946,21 +960,78 @@ function buildClient(state: ClientState): SnClient {
 
   const planChanges = async (changes: SafeChange[]): Promise<PreparedChange[]> => {
     const now = new Date().toISOString();
+    const isRef = (value: string) => value.startsWith("@");
+    const refs = new Map<string, string>();
+    const resolve = (value: string): string => {
+      if (!isRef(value)) return value;
+      const uuid = refs.get(value);
+      if (!uuid) throw new Error(`Unknown tag ${value}: create it earlier in this batch with ref "${value}"`);
+      return uuid;
+    };
+    type Creation = { change: CreateChange; uuid: string; parent?: string; notes: string[] };
+    const created = new Map<string, Creation>();
     const groups = new Map<string, EditChange[]>();
-    const order: Array<CreateChange | string> = [];
+    const order: Array<Creation | string> = [];
     for (const change of changes) {
       if (change.kind === "recovery") throw new Error("Recovery is internal; use prepareRecovery");
-      if (change.kind === "note_create" || change.kind === "tag_create") { order.push(change); continue; }
-      const group = groups.get(change.uuid);
-      if (group) group.push(change);
-      else { groups.set(change.uuid, [change]); order.push(change.uuid); }
+      if (change.kind === "note_create" || change.kind === "tag_create") {
+        const entry: Creation = { change, uuid: crypto.randomUUID(), notes: [] };
+        if (change.kind === "tag_create") {
+          if (change.parent !== undefined) entry.parent = resolve(change.parent);
+          if (change.ref !== undefined) {
+            if (refs.has(change.ref)) throw new Error(`Tag reference ${change.ref} is used twice`);
+            refs.set(change.ref, entry.uuid);
+          }
+          created.set(entry.uuid, entry);
+        }
+        order.push(entry);
+        continue;
+      }
+      if (isRef(change.uuid)) {
+        if (change.kind !== "tag_attach") throw new Error("Only tag_attach can target a tag created in this batch");
+        const entry = created.get(resolve(change.uuid))!;
+        if (!entry.notes.includes(change.noteUuid)) entry.notes.push(change.noteUuid);
+        continue;
+      }
+      const edit = (change.kind === "tag_update" && typeof change.parent === "string"
+        ? { ...change, parent: resolve(change.parent) } : change) as EditChange;
+      const group = groups.get(edit.uuid);
+      if (group) group.push(edit);
+      else { groups.set(edit.uuid, [edit]); order.push(edit.uuid); }
+    }
+    // The hierarchy after this batch must stay a forest: every parent exists, nothing is its own ancestor.
+    const parentOf = new Map<string, string | null>();
+    for (const tag of state.tagsCache.values()) parentOf.set(tag.uuid, parentUuidOf(tag));
+    for (const entry of created.values()) parentOf.set(entry.uuid, entry.parent ?? null);
+    const moved = new Set<string>(created.keys());
+    for (const [uuid, group] of groups) {
+      for (const change of group) {
+        if (change.kind === "tag_update" && change.parent !== undefined) { parentOf.set(uuid, change.parent); moved.add(uuid); }
+      }
+    }
+    for (const uuid of moved) {
+      const parent = parentOf.get(uuid);
+      if (parent && !created.has(parent)) {
+        const raw = state.encryptedItemsRaw.get(parent);
+        if (!raw || raw.deleted || raw.content_type !== "Tag" || !state.tagsCache.has(parent)) throw new Error(`Parent tag ${parent} not found`);
+      }
+      const seen = new Set<string>();
+      for (let at: string | null | undefined = uuid; at; at = parentOf.get(at)) {
+        if (seen.has(at)) throw new Error(`Moving tag ${uuid} there would make it its own ancestor`);
+        seen.add(at);
+      }
     }
     const plans: PreparedChange[] = [];
     for (const entry of order) {
-      plans.push(typeof entry === "string" ? await planEdit(groups.get(entry)!, now) : await planCreate(entry, now));
+      if (typeof entry === "string") { plans.push(await planEdit(groups.get(entry)!, now)); continue; }
+      for (const noteUuid of entry.notes) await writableNote(noteUuid);
+      const tagRefs: TagReference[] = [...(entry.parent ? [makeParentRef(entry.parent)] : []),
+        ...entry.notes.map((uuid) => ({ uuid, content_type: "Note" }))];
+      plans.push(await planCreate(entry.change, now, entry.uuid, tagRefs));
     }
     return plans;
   };
+
 
   // Callers sync first, so a batch of recoveries shares one snapshot.
   const recoverPlan = async (plan: PreparedChange): Promise<PreparedChange> => {
@@ -1146,6 +1217,7 @@ function buildClient(state: ClientState): SnClient {
         if (before?.content_type === "Note") await writableNote(before.uuid);
         if (change.kind === "tag_attach" || change.kind === "tag_detach") await writableNote(change.noteUuid);
         if (before?.content_type === "Tag") await writableTagTargets(before, after);
+        if (!before && after.content_type === "Tag") await writableTagTargets(null, after);
         await decryptItemContent(after, contentKeys());
       }
       options?.signal?.throwIfAborted();

@@ -49,12 +49,12 @@ describe("parentUuidOf", () => {
     expect(parentUuidOf(t)).toBe(B);
   });
 
-  it("accepts a legacy SN|Tag reference without reference_type", () => {
+  it("does not treat a reference without reference_type as a parent (official app rule)", () => {
     const t = tag({
       uuid: A,
-      references: [{ uuid: B, content_type: "SN|Tag" }],
+      references: [{ uuid: B, content_type: "Tag" }, { uuid: C, content_type: "SN|Tag" }],
     });
-    expect(parentUuidOf(t)).toBe(B);
+    expect(parentUuidOf(t)).toBeNull();
   });
 
   it("ignores a SN|Tag reference whose reference_type is something else", () => {
@@ -82,7 +82,7 @@ describe("parentUuidOf", () => {
 });
 
 describe("stripParentRefs", () => {
-  it("removes both modern and legacy parent references, preserves the rest", () => {
+  it("removes only TagToParentTag references and preserves everything else", () => {
     const refs = [
       { uuid: "note-1", content_type: "Note" },
       { uuid: B, content_type: "SN|Tag", reference_type: "TagToParentTag" },
@@ -90,6 +90,7 @@ describe("stripParentRefs", () => {
     ];
     expect(stripParentRefs(refs)).toEqual([
       { uuid: "note-1", content_type: "Note" },
+      { uuid: C, content_type: "SN|Tag" },
     ]);
   });
 
@@ -103,9 +104,10 @@ describe("stripParentRefs", () => {
 
 describe("makeParentRef", () => {
   it("emits the shape SN clients expect on the wire", () => {
+    // TagMutator.makeChildOf in standardnotes/app; ContentType.TYPES.Tag is "Tag".
     expect(makeParentRef(B)).toEqual({
       uuid: B,
-      content_type: "SN|Tag",
+      content_type: "Tag",
       reference_type: "TagToParentTag",
     });
   });

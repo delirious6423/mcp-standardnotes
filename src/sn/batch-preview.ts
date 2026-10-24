@@ -56,15 +56,16 @@ function appDataDiff(from: unknown, to: unknown): Record<string, unknown> {
   return out;
 }
 
+// Identity of a reference for added/removed: type, relation and target.
 function refIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((ref: unknown) => {
     const r = ref as Content | null;
-    return r && typeof r.uuid === "string" ? [`${String(r.content_type)}:${r.uuid}`] : [];
+    return r && typeof r.uuid === "string" ? [`${String(r.content_type)}|${String(r.reference_type ?? "")}|${r.uuid}`] : [];
   });
 }
 
-function diff(before: Content, after: Content, noteTitle: (uuid: string) => string | undefined): Record<string, unknown> {
+function diff(before: Content, after: Content, titleOf: (uuid: string) => string | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const textChanged = !same(before.text, after.text);
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
@@ -81,8 +82,8 @@ function diff(before: Content, after: Content, noteTitle: (uuid: string) => stri
       const was = refIds(from);
       const now = refIds(to);
       const describe = (id: string) => {
-        const [type, uuid] = id.split(/:(.*)/s) as [string, string];
-        return { uuid, type, title: type === "Note" ? noteTitle(uuid) ?? null : null };
+        const [type, relation, uuid] = id.split("|") as [string, string, string];
+        return { uuid, type, title: titleOf(uuid) ?? null, ...(relation === "TagToParentTag" ? { relation: "parent" } : {}) };
       };
       const added = now.filter((id) => !was.includes(id)).map(describe);
       const removed = was.filter((id) => !now.includes(id)).map(describe);
@@ -95,8 +96,11 @@ function diff(before: Content, after: Content, noteTitle: (uuid: string) => stri
   return out;
 }
 
-export function batchPreview(plans: PreparedChange[], noteTitle: (uuid: string) => string | undefined): BatchPreview {
+export function batchPreview(plans: PreparedChange[], titleOf: (uuid: string) => string | undefined): BatchPreview {
   const counts: Record<string, number> = {};
+  // Items created in this batch are not in the vault yet; name them from the plan.
+  const planned = new Map(plans.filter((p) => !p.before).map((p) => [p.after.uuid, (p.preview as { after: Content }).after.title]));
+  const title = (uuid: string) => { const t = planned.get(uuid); return typeof t === "string" ? t : titleOf(uuid); };
   const plan = plans.map((p) => {
     for (const change of p.changes ?? [p.change]) counts[change.kind] = (counts[change.kind] ?? 0) + 1;
     const view = p.preview as { kind: string; before: Content | null; after: Content };
@@ -107,7 +111,7 @@ export function batchPreview(plans: PreparedChange[], noteTitle: (uuid: string) 
       title: view.after.title ?? before.title ?? null,
       kinds: view.kind,
       ...(p.before ? {} : { created: true as const }),
-      changes: diff(before, view.after, noteTitle),
+      changes: diff(before, view.after, title),
     };
   });
   return { kind: "batch", items: plans.length, counts, plan };

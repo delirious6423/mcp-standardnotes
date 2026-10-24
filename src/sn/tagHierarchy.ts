@@ -1,45 +1,23 @@
 import type { DecryptedTag, TagReference } from "./protocol004.js";
 
 /**
- * Standard Notes stores tag folder hierarchy as a TagToParentTag reference
- * on the CHILD tag. See standardnotes/app packages/models .../Tag.ts
- * `parentId` getter and .../Reference/Functions.ts `isTagToParentTagReference`.
- *
- * Modern references carry `reference_type: "TagToParentTag"`. Payloads written
- * by older clients omit `reference_type` and just have `content_type: "SN|Tag"`;
- * historically that shape only ever meant "parent of" (there is no reverse
- * link from parent to children in SN), so we accept it.
- *
- * A reference with `reference_type` set to anything other than TagToParentTag
- * (e.g. TagToFile) is NOT a parent link even when content_type is SN|Tag —
- * so gate on the value, not just presence.
+ * Standard Notes stores tag folder hierarchy as a TagToParentTag reference on the CHILD tag.
+ * The official app recognises a parent link by `reference_type` alone
+ * (standardnotes/app packages/models .../Reference/Functions.ts `isTagToParentTagReference`)
+ * and writes `{ reference_type: "TagToParentTag", content_type: "Tag", uuid }`
+ * (TagMutator `makeChildOf`; ContentType.TYPES.Tag is "Tag"). References without a
+ * reference_type are not parent links and are preserved untouched.
  */
 export function parentUuidOf(t: DecryptedTag): string | null {
-  for (const r of t.references) {
-    if (r.reference_type === "TagToParentTag") return r.uuid;
-    if (r.reference_type === undefined && r.content_type === "SN|Tag") {
-      return r.uuid;
-    }
-  }
-  return null;
+  return t.references.find((r) => r.reference_type === "TagToParentTag")?.uuid ?? null;
 }
 
 export function stripParentRefs(refs: TagReference[]): TagReference[] {
-  return refs.filter((r) => {
-    if (r.reference_type === "TagToParentTag") return false;
-    if (r.reference_type === undefined && r.content_type === "SN|Tag") {
-      return false;
-    }
-    return true;
-  });
+  return refs.filter((r) => r.reference_type !== "TagToParentTag");
 }
 
 export function makeParentRef(parentUuid: string): TagReference {
-  return {
-    uuid: parentUuid,
-    content_type: "SN|Tag",
-    reference_type: "TagToParentTag",
-  };
+  return { uuid: parentUuid, content_type: "Tag", reference_type: "TagToParentTag" };
 }
 
 /**

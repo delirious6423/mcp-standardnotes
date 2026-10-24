@@ -27,6 +27,25 @@ describe("safe change boundary",()=>{
       {kind:"note_flags",uuid,archived:true},
     ]) expect(changeInput.safeParse(value).success).toBe(false);
   });
+  it("accepts nested-tag changes and batch tag refs only in valid shapes",()=>{
+    for(const value of [
+      {kind:"tag_create",title:"Work",ref:"@work"},
+      {kind:"tag_create",title:"NVIDIA",parent:"@work"},
+      {kind:"tag_create",title:"Sub",parent:uuid},
+      {kind:"tag_update",uuid,revision,parent:null},
+      {kind:"tag_update",uuid,revision,parent:"@work",title:"Moved"},
+      {kind:"tag_attach",uuid:"@work",noteUuid:uuid},
+    ]) expect(changeInput.safeParse(value).success).toBe(true);
+    for(const value of [
+      {kind:"tag_create",title:"Bad",ref:"work"},
+      {kind:"tag_create",title:"Bad",ref:"@has space"},
+      {kind:"tag_update",uuid,revision},
+      {kind:"tag_attach",uuid:"@work",revision,noteUuid:uuid},
+      {kind:"tag_attach",uuid,noteUuid:uuid},
+      {kind:"tag_detach",uuid:"@work",revision,noteUuid:uuid},
+      {kind:"tag_update",uuid:"@work",revision,title:"x"},
+    ]) expect(changeInput.safeParse(value).success).toBe(false);
+  });
   it("validates UTF-8 bytes and strict operation IDs",()=>{
     expect(changeInput.safeParse({kind:"note_create",title:"t",text:"😀".repeat(3*1024*1024)}).success).toBe(false);
     expect(operationInput.safeParse({operationId:"../../escape"}).success).toBe(false);
