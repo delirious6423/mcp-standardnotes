@@ -23,16 +23,6 @@ cleanup() {
   if [[ -n "$INCUS_VM" ]]; then
     incus_vm_owned || { echo "Refusing evidence/cleanup for an unowned VM" >&2; exit 1; }
   fi
-  if [[ -n "$INCUS_VM" && "${SN_GUI_TEST:-0}" == 1 ]]; then
-    # Warm slot names repeat; a per-run directory keeps old frames from posing as this run's.
-    evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM-$(date +%Y%m%dT%H%M%S)"
-    mkdir -p "$evidence"
-    if timeout 60 "${INCUS[@]}" file pull -r "$INCUS_VM/tmp/sn-gui-test" "$evidence" >/dev/null 2>&1; then
-      echo "GUI evidence: $evidence"
-    else
-      echo "GUI evidence pull failed: $evidence" >&2
-    fi
-  fi
   if [[ "$rc" != 0 && -n "$INCUS_VM" ]]; then
     evidence="${DATA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/cache/standardnotes-mcp/$INCUS_VM"
     mkdir -p "$evidence"
@@ -46,11 +36,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 # Packages are installed once and kept in the warm VM snapshot.
 INCUS_PACKAGES="nodejs npm build-essential python3 pkg-config libsecret-1-dev dbus-x11 gnome-keyring --no-install-recommends"
-if [[ "${SN_GUI_TEST:-0}" == 1 ]]; then
-  incus_vm_start standardnotes-gui 8192 4 "$REPO/tests/vm/provision-gui.sh"
-else
-  incus_vm_start standardnotes 4096 2
-fi
+incus_vm_start standardnotes 4096 2
 printf 'VM: '
 # shellcheck disable=SC2016
 timeout 20 "${GUEST[@]}" '. /etc/os-release; echo "$PRETTY_NAME"; mkdir -p ~/standardnotes-mcp'
@@ -70,19 +56,10 @@ timeout 120 "${GUEST[@]}" 'cd ~/standardnotes-mcp && npm audit --audit-level=hig
 if [ -f "$REPO/tests/mcp-e2e.mjs" ]; then
   timeout 120 "${GUEST[@]}" 'cd ~/standardnotes-mcp && dbus-run-session -- bash tests/vm/e2e.sh'
 fi
-if [[ "${SN_GUI_TEST:-0}" == 1 ]]; then
-  GUI_BINARY="${SN_GUI_BINARY:-$REPO/gui/target/debug/standardnotes-connection}"
-  [[ -f "$GUI_BINARY" ]] || { echo "Build the GPUI binary first" >&2; exit 1; }
-  timeout 30 "${INCUS[@]}" file push "$GUI_BINARY" "$INCUS_VM/home/tester/standardnotes-mcp/bin/standardnotes-connection"
-  timeout 10 "${INCUS[@]}" exec "$INCUS_VM" -T -- chown tester:tester /home/tester/standardnotes-mcp/bin/standardnotes-connection
-  DEBUG_SECONDS="${SN_GUI_DEBUG_SECONDS:-0}"
-  [[ "$DEBUG_SECONDS" =~ ^[0-9]+$ && "$DEBUG_SECONDS" -le 300 ]] || exit 1
-  timeout 450 "${GUEST[@]}" "cd ~/standardnotes-mcp && chmod +x bin/standardnotes-connection && SN_GUI_DEBUG_SECONDS=$DEBUG_SECONDS dbus-run-session -- bash tests/vm/gui.sh"
-fi
 # No guest accounts, keychain entries or operation state copied to host.
 if [[ "${SN_INSTALL_ARTIFACTS:-0}" == 1 ]]; then
   # Stage then swap so live MCP clients never see a half-written dist/. node_modules is replaced
-  # only on request: the lockfile is unchanged between GUI-era builds and clients run from it.
+  # only on request: clients run from it.
   rm -rf "$REPO/dist.new"
   mkdir -p "$REPO/dist.new"
   timeout 20 "${GUEST[@]}" 'tar -cf - -C ~/standardnotes-mcp/dist .' | tar -xf - -C "$REPO/dist.new"

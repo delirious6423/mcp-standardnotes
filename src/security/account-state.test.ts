@@ -8,7 +8,6 @@ import { promisify } from "node:util";
 import { atomicPrivateWrite, privateDirectory, unlockAbandonedAccount, withAccountLock } from "./account-state.js";
 import { durablePrivateRename, openPrivateFile } from "./private-fs.js";
 import { WriteJournal } from "./write-journal.js";
-import { configureAgents } from "../gui/configure.js";
 import type { PreparedChange, SnClient } from "../sn/client.js";
 
 vi.mock("node:fs/promises", async (original) => {
@@ -227,54 +226,6 @@ async function windowsTestScript(script: string, file: string): Promise<void> {
 }
 
 describe.runIf(windows && process.env.SN_VM_TEST === "1")("native Windows NTFS acceptance (VM only)", { timeout: 120_000 }, () => {
-  it("configures missing clients privately under broad-readable parents and preserves existing files without backups", async () => fixture(async (dir) => {
-    await windowsTestScript(String.raw`
-$p = $env:SN_TEST_PATH
-$acl = [IO.Directory]::GetAccessControl($p)
-$everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
-$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone, 'ReadAndExecute', 'ContainerInherit, ObjectInherit', 'None', 'Allow'))
-[IO.Directory]::SetAccessControl($p, $acl)`, dir);
-    const pi = path.join(dir, ".pi", "agent");
-    await fs.mkdir(pi, { recursive: true });
-    vi.stubEnv("SN_STATE_DIR", path.join(dir, "synthetic-state"));
-    vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
-      const fh = await actualFs.open(...args);
-      const write = fh.writeFile.bind(fh);
-      vi.spyOn(fh, "writeFile").mockImplementationOnce(async (data, options) => {
-        expect((await fh.stat()).size).toBe(0);
-        await windowsTestScript(String.raw`
-$acl = [IO.File]::GetAccessControl($env:SN_TEST_PATH)
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value) { throw 'Not private before content' }`, String(args[0]));
-        return write(data, options);
-      });
-      return fh;
-    });
-    expect(await configureAgents(dir)).toMatchObject({ configured: ["Pi", "Claude Code"], manual: [] });
-    for (const file of [path.join(dir, ".claude.json"), path.join(pi, "mcp.json")]) {
-      const fh = await openPrivateFile(file);
-      try { expect(JSON.parse(await fh.readFile("utf8")).mcpServers).toHaveProperty("standardnotes"); }
-      finally { await fh.close(); }
-      expect((await fs.stat(file)).nlink).toBe(1);
-      await windowsTestScript(String.raw`
-$acl = [IO.File]::GetAccessControl($env:SN_TEST_PATH)
-if (-not $acl.AreAccessRulesProtected -or @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])).Count -ne 1) { throw 'Published config not private' }`, file);
-    }
-    const existing = path.join(dir, ".claude.json"), synthetic = '{"token":"synthetic-existing-not-real"}';
-    await fs.writeFile(existing, synthetic);
-    const again = await configureAgents(dir);
-    expect(again.configured).toEqual([]);
-    expect(again.preserved).toEqual(["Pi", "Claude Code"]);
-    expect(JSON.stringify(again)).not.toContain("synthetic-existing-not-real");
-    expect(await fs.readFile(existing, "utf8")).toBe(synthetic);
-    await windowsTestScript(String.raw`
-$acl = [IO.Directory]::GetAccessControl($env:SN_TEST_PATH)
-if (@($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])).Count -ne 2) { throw 'Parent ACL changed' }`, dir);
-    expect(await fs.readdir(path.join(dir, ".standardnotes-agent-config"))).toEqual([]);
-    expect(await fs.readdir(path.join(pi, ".standardnotes-agent-config"))).toEqual([]);
-    expect((await fs.readdir(dir)).sort()).toEqual([".claude.json", ".pi", ".standardnotes-agent-config"].sort());
-  }));
   it("round-trips encrypted journal preparation, approval and durable commit", async () => fixture(async (dir) => {
     vi.mocked(execFile).mockImplementation((...args: any[]) => {
       const started = Date.now(), command = [...args[1]];

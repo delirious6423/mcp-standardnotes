@@ -59,8 +59,8 @@ ROOT="/tmp/sn-acceptance-$TOKEN"
 T=30 mac "tart exec '$MAC_VM' sh -c 'mkdir -p $ROOT/source; printf %s $TOKEN > $ROOT/owner'"
 # Never transfer host dependencies, credentials, caches, or platform-specific build output.
 # shellcheck disable=SC2016 # Positional arguments expand in the child shell.
-tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=gui/target --exclude=.serena \
-  -C "$SOURCE" -cf - src tests gui package.json package-lock.json tsconfig.json .eslintrc.cjs LICENSE | timeout 120 bash -c '
+tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=.serena \
+  -C "$SOURCE" -cf - src tests package.json package-lock.json tsconfig.json .eslintrc.cjs LICENSE | timeout 120 bash -c '
   source "$1/vm/macos/common.sh"
   vm_ssh "tar -xf - -C $2/source"
 ' _ "$DOTFILES" "$ROOT"

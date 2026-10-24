@@ -5,10 +5,13 @@ import { z } from "zod";
 import { accountDirectory, privateDirectory, withAccountLock } from "../security/account-state.js";
 import { WriteJournal } from "../security/write-journal.js";
 import { recoveryKey, resolveEmail } from "../sn/session.js";
+import { renderPreview, visible } from "./render-preview.js";
 
 async function main(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Approval requires your interactive terminal, not piped input");
-  const id = z.string().uuid().parse(process.argv[2]);
+  const args = process.argv.slice(2);
+  const json = args.includes("--json");
+  const id = z.string().uuid().parse(args.find((a) => a !== "--json"));
   const server = process.env.SN_SERVER_URL ?? "https://api.standardnotes.com";
   const base = process.env.SN_STATE_DIR;
   if (!base) throw new Error("SN_STATE_DIR is required");
@@ -17,11 +20,16 @@ async function main(): Promise<void> {
   // Never hold the account lock while the human reads; re-check the immutable record at approval.
   const journal = new WriteJournal(dir, await recoveryKey(path.basename(dir), false));
   const preview = await journal.preview(id);
-  process.stdout.write(`${JSON.stringify(preview, null, 2)}\n`);
+  process.stdout.write(json ? `${visible(JSON.stringify(preview, null, 2))}\n` : renderPreview(preview));
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   let answer: string;
-  try { answer = await terminal.question(`Type approve ${id} to allow exactly this operation: `); }
+  try { answer = await terminal.question(`Type "approve ${id}" to allow exactly this operation, or "reject" to refuse it permanently: `); }
   finally { terminal.close(); }
+  if (answer.trim() === "reject") {
+    await withAccountLock(dir, () => journal.reject(id));
+    process.stdout.write("Rejected. This operation can never be committed.\n");
+    return;
+  }
   if (answer !== `approve ${id}`) throw new Error("Not approved; no remote changes made");
   await withAccountLock(dir, () => journal.approve(id));
   process.stdout.write("Approved. The agent may now commit this exact operation.\n");

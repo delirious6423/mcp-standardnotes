@@ -23,7 +23,7 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
     const client = async (): Promise<SnClient> => {
       const stored = await loadSession(email);
       if (!stored || stored.serverUrl !== serverUrl || stored.email !== email) {
-        throw new Error("Keychain session does not match this account/server; sign in through Standard Notes Agent Connection");
+        throw new Error("Keychain session does not match this account/server; sign in with `standardnotes-mcp login` in your terminal");
       }
       return createClientFromSession({ serverUrl, email });
     };

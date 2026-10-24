@@ -5,7 +5,7 @@ if [[ "${1:-}" == help || "${1:-}" == --help ]]; then
     printf '%s\n' 'Usage: standardnotes-mcp [serve|login|logout|approve OPERATION_UUID|unlock --clients-stopped]' \
       'Credentials: interactive login stores them only in your OS keychain.' \
       'State: set SN_STATE_DIR or DATA_DIR; local dotfiles machine settings are used if present.' \
-      'Writes: preview over MCP; committing opens the Standard Notes Agent Connection window (bin/standardnotes-connection) for review and approval. Terminal approve is legacy/debug only.'
+      'Writes: the agent prepares a preview over MCP; you review it here with approve OPERATION_UUID (type the phrase, or "reject"), then the agent commits.'
     exit 0
 fi
 if [[ -z "${SN_STATE_DIR:-}" && -z "${DATA_DIR:-}" ]]; then

@@ -1,6 +1,6 @@
 # Shared local Standard Notes MCP
 
-Local fork of lozit/mcp-standardnotes pinned to upstream `749d4662ca1c4c0183e6086cf1a43f681458ce25` (MIT). No public fork, npm publication, or Standard Notes app changes.
+Fork of lozit/mcp-standardnotes (MIT), branched from upstream `749d4662ca1c4c0183e6086cf1a43f681458ce25`. Not published to npm. No Standard Notes app changes.
 
 ## Privacy and access
 
@@ -20,7 +20,7 @@ Local checkout: `~/code/standardnotes-mcp`. Launcher: `bin/standardnotes-mcp`. B
 
 Set `SN_STATE_DIR` to a private absolute path on your data volume, or `DATA_DIR`. The launcher can read the current machine's `~/code/dotfiles/machines/<hostname>.env`; for example `DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`. No password or email belongs in MCP JSON.
 
-Sign in with the native Standard Notes Agent Connection app (`bin/standardnotes-connection`; also in your application menu once installed), or from your own interactive desktop terminal:
+Sign in from your own interactive terminal:
 
 ```bash
 ~/code/standardnotes-mcp/bin/standardnotes-mcp login
@@ -52,10 +52,10 @@ Read tools: `notes_list`, `notes_search`, `notes_get`, `notes_get_batch` (up to 
 1. Agent calls `writes_prepare` with one change. Available kinds: `note_create`, `note_update` (replace body, append, rename), `note_trash`, `note_restore`, `tag_create`, `tag_update` (rename), `tag_attach`, `tag_detach`. Existing-item changes require the read revision. Body writes support plain-text/Markdown only; structured-note body conversion is deliberately unavailable. Body edits refresh the derived plain preview and remove stale HTML previews; renames/trash preserve them.
 
    For more than a few changes, call `writes_prepare_batch` with up to 200 changes instead: one sync, one preview, one approval. Several changes to the same item compose in order and must cite the same revision. Commit is all-or-nothing at preflight: if any item is stale, protected or changed, nothing is sent. Items are pushed in chunks of 50 and read back; if only some land, the operation becomes `uncertain`, `writes_status` lists the unconfirmed items, and retrying the same operation UUID only reconciles. A tag created in a batch cannot be attached in the same batch. Undo of a batch stages one recovery batch. For an `uncertain` batch, undo covers only items that landed (exact never-applied items are skipped; any other change is a conflict). Created tags are kept and listed in `skipped`. During commit, a server conflict or cancellation stops the remaining chunks.
-2. `writes_commit` opens the native Standard Notes Agent Connection window for the saved operation. It shows the full before/after preview and the pinned account (local journal-account binding, not a cloud check); review it, tick the consent box, and Approve or Reject. Previews expire after one hour. There is no MCP approval tool. The terminal `bin/standardnotes-mcp approve OPERATION_UUID` flow is legacy/debug only, and the currently installed pre-GUI build uses it until the GUI-era install gate passes.
+2. The user approves in their own terminal: `bin/standardnotes-mcp approve OPERATION_UUID`. It prints every changed field of every item (nothing truncated; invisible, control and bidi characters shown as `⟦U+XXXX⟧`), then asks for the typed phrase `approve OPERATION_UUID`, or `reject` to refuse it permanently. `--json` prints the raw stored preview instead. Previews expire after one hour. There is no MCP approval tool, and the command refuses piped input.
 
-   **Threat model:** human approval protects the MCP tool surface. It is not an OS sandbox and not proof of human presence: any process running as your user with shell and keychain access can invoke the private GUI bridge or the connector directly and approve its own write. Do not give untrusted agents unrestricted shell access under your account; stronger isolation (separate user/service, OS user-presence prompt) is a separate design that is not implemented.
-3. Agent calls `writes_commit` with the saved operation UUID. Recovery records are durable before transmission; conflicts fail closed. The server reads the result back before confirming it.
+   **Threat model:** human approval protects the MCP tool surface. It is not an OS sandbox and not proof of human presence: any process running as your user with shell and keychain access can run the approve command under a pseudo-terminal, or call the connector directly, and approve its own write. Do not give untrusted agents unrestricted shell access under your account; stronger isolation (separate user/service, OS user-presence prompt) is a separate design that is not implemented.
+3. Agent calls `writes_commit` with the saved operation UUID. Without approval it fails and sends nothing. Recovery records are durable before transmission; conflicts fail closed. The server reads the result back before confirming it.
 4. After an uncertain outcome, inspect `writes_status`. Retry ONLY the same operation UUID to reconcile. Previously attempted operations never resend; they can confirm an exact applied ciphertext or fail closed. Do not create a replacement operation blindly.
 5. `writes_undo_prepare` stages recovery of a confirmed operation only if the item still matches what it wrote. Approve and commit the new preview separately. New-note undo uses Trash; tag creation cannot be undone through MCP.
 

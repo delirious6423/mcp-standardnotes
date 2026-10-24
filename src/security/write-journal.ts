@@ -65,7 +65,8 @@ export class WriteJournal {
     await this.save(record);
     return { operationId: record.id, status: record.status, preview: previewOf(record),
       expiresAt: new Date(Date.parse(record.createdAt) + 3600_000).toISOString(),
-      next: "Call writes_commit with this operationId. A local review window will ask you to approve or reject before any write. You can also review pending edits in Standard Notes Agent Connection." };
+      approve: `standardnotes-mcp approve ${record.id}`,
+      next: "Ask the user to run the approve command in their own terminal (it shows the full preview and asks for a typed confirmation), then call writes_commit with this operationId." };
   }
 
   async preview(id: string): Promise<{operationId: string; status: RecordEntry["status"]; approved: boolean; preview: unknown; createdAt: string; expiresAt: string}> {
@@ -110,7 +111,7 @@ export class WriteJournal {
     if (record.status === "prepared" && Date.now() - Date.parse(record.createdAt) > 3600_000) {
       throw new Error("Preview expired; prepare a fresh operation");
     }
-    if (!record.approvedAt) throw new Error("Human approval required in Standard Notes Agent Connection");
+    if (!record.approvedAt) throw new Error(`Human approval required: ask the user to run \`standardnotes-mcp approve ${id}\` in their own terminal, then call writes_commit again. Nothing was sent.`);
     const reconcileOnly = record.status !== "prepared";
     // Durable encrypted before+after records MUST precede any remote write.
     signal?.throwIfAborted();
