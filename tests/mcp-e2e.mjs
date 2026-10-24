@@ -210,6 +210,23 @@ try {
   await call(b,'writes_commit',{operationId:batchUndo.operationId});
   content=await decryptItemContent(store.get(createdId),keyMap);
   check(content.title==='Timeout test' && !content.trashed && !content.appData?.['org.standardnotes.sn']?.archived && !(await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(createdId),'batch undo restores every item');
+  // Merge: one new note, sources trashed, tags carried over; one undo.
+  const pair=(await call(a,'notes_get_batch',{uuids:[noteId,createdId]})).notes;
+  const mergeTag=await call(a,'tags_get',{uuid:tag.uuid});
+  const tagForMerge=await call(a,'writes_prepare_batch',{changes:[{kind:'tag_attach',uuid:tag.uuid,revision:mergeTag.revision,noteUuid:createdId}]});
+  await call(a,'writes_commit',{operationId:tagForMerge.operationId});
+  const sources=(await call(a,'notes_get_batch',{uuids:pair.map(n=>n.uuid)})).notes.map(n=>({uuid:n.uuid,revision:n.revision}));
+  await rejected(a,'writes_prepare',{change:{kind:'note_merge',title:'Merged',sources}});
+  const merge=await call(a,'writes_prepare_batch',{changes:[{kind:'note_merge',title:'Merged',sources}]});
+  check(merge.preview.counts.note_merge===1 && merge.preview.counts.note_trash===2 && merge.preview.counts.tag_attach>=1 && merge.preview.items===3+merge.preview.counts.tag_attach,'merge preview counts the new note, trashes and tag');
+  await call(a,'writes_commit',{operationId:merge.operationId});
+  const mergedId=merge.preview.plan[0].uuid;
+  content=await decryptItemContent(store.get(mergedId),keyMap);
+  check(content.title==='Merged' && pair.every(n=>content.text.includes(`## ${n.title}\n\n`)) && (await call(a,'tags_get',{uuid:tag.uuid})).noteUuids.includes(mergedId),'merged note created with the sources\' tag');
+  check((await Promise.all(sources.map(async s=>(await decryptItemContent(store.get(s.uuid),keyMap)).trashed===true))).every(Boolean),'merge trashes the sources');
+  const mergeUndo=await call(b,'writes_undo_prepare',{operationId:merge.operationId});
+  await call(b,'writes_commit',{operationId:mergeUndo.operationId});
+  check((await Promise.all(sources.map(async s=>!(await decryptItemContent(store.get(s.uuid),keyMap)).trashed))).every(Boolean) && (await decryptItemContent(store.get(mergedId),keyMap)).trashed===true,'merge undo restores the sources and trashes the merged note');
   await rejected(a,'writes_prepare',{change:{kind:'note_trash',uuid:noteId,revision,permanent:true}});
   await rejected(a,'writes_prepare',{change:{kind:'recovery',uuid:noteId,revision}});
   const declined=await call(a,'writes_prepare',{change:{kind:'note_create',title:'Reject test',text:'Do not write'}});

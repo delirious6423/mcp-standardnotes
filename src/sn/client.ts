@@ -53,10 +53,15 @@ export type SafeChange =
   // `uuid` may be "@ref" (a tag created earlier in this batch); then there is no revision.
   | { kind: "tag_attach"; uuid: string; revision?: string; noteUuid: string }
   | { kind: "tag_detach"; uuid: string; revision: string; noteUuid: string }
+  // One new note built from the sources' current text (in order); the sources' tags are attached to it
+  // and, unless trashSources is false, the sources are trashed.
+  | { kind: "note_merge"; title: string; sources: Array<{ uuid: string; revision: string }>; headings?: boolean;
+      separator?: string; trashSources?: boolean; noteType?: "plain-text" | "markdown" }
   | { kind: "recovery"; uuid: string; revision: string };
 
 type CreateChange = Extract<SafeChange, { kind: "note_create" | "tag_create" }>;
-type EditChange = Exclude<SafeChange, CreateChange | { kind: "recovery" }>;
+type MergeChange = Extract<SafeChange, { kind: "note_merge" }>;
+type EditChange = Exclude<SafeChange, CreateChange | MergeChange | { kind: "recovery" }>;
 
 export interface PreparedChange {
   change: SafeChange;
@@ -802,7 +807,8 @@ function buildClient(state: ClientState): SnClient {
     return value as Record<string, unknown>;
   };
 
-  const writableTagTargets = async (before: http.RawItem | null, after: http.RawItem): Promise<void> => {
+  // `created`: notes created in the same batch; they are not on the server yet and are new, so writable.
+  const writableTagTargets = async (before: http.RawItem | null, after: http.RawItem, created: Set<string> = new Set()): Promise<void> => {
     const oldContent = before ? await decryptItemContent(before, contentKeys()) : {};
     const newContent = await decryptItemContent(after, contentKeys());
     const noteTargets = (value: unknown): Set<string> => {
@@ -816,7 +822,7 @@ function buildClient(state: ClientState): SnClient {
     const oldTargets = noteTargets(oldContent.references);
     const newTargets = noteTargets(newContent.references);
     for (const uuid of new Set([...oldTargets, ...newTargets])) {
-      if (oldTargets.has(uuid) !== newTargets.has(uuid)) await writableNote(uuid);
+      if (oldTargets.has(uuid) !== newTargets.has(uuid) && !created.has(uuid)) await writableNote(uuid);
     }
   };
 
@@ -860,6 +866,18 @@ function buildClient(state: ClientState): SnClient {
     };
   };
 
+  // Only plain-text and Markdown bodies are read or written as text; structured editors are left alone.
+  const plainBody = (content: Record<string, unknown>): string => {
+    const type = content.noteType ?? "plain-text";
+    const editor = content.editorIdentifier;
+    if ((type !== "plain-text" && type !== "markdown") ||
+        (editor !== undefined && editor !== "org.standardnotes.advanced-markdown-editor") ||
+        (content.text !== undefined && typeof content.text !== "string")) {
+      throw new Error("Body edits require a known plain-text or markdown note");
+    }
+    return (content.text as string | undefined) ?? "";
+  };
+
   const applyChange = (content: Record<string, unknown>, change: EditChange): void => {
     switch (change.kind) {
       case "note_update": {
@@ -867,14 +885,9 @@ function buildClient(state: ClientState): SnClient {
           throw new Error("Specify text or append, not both");
         }
         if (change.text !== undefined || change.append !== undefined) {
-          const type = content.noteType ?? "plain-text";
-          const editor = content.editorIdentifier;
-          if ((type !== "plain-text" && type !== "markdown") ||
-              (editor !== undefined && editor !== "org.standardnotes.advanced-markdown-editor") ||
-              (content.text !== undefined && typeof content.text !== "string")) {
-            throw new Error("Body edits require a known plain-text or markdown note");
-          }
-          const nextText = change.text ?? ((content.text as string | undefined) ?? "") + change.append;
+          // Checked before choosing replace or append: a full replacement must not skip the type rule.
+          const current = plainBody(content);
+          const nextText = change.text ?? current + change.append;
           if (Buffer.byteLength(nextText, "utf8") > 10 * 1024 * 1024) {
             throw new Error("Final note text exceeds 10 MiB UTF-8 limit");
           }
@@ -928,7 +941,7 @@ function buildClient(state: ClientState): SnClient {
     }
   };
 
-  const planEdit = async (group: EditChange[], now: string): Promise<PreparedChange> => {
+  const planEdit = async (group: EditChange[], now: string, created: Set<string> = new Set()): Promise<PreparedChange> => {
     const first = group[0]!;
     const typeOf = (change: EditChange) => change.kind.startsWith("note_") ? "Note" : "Tag";
     const raw = state.encryptedItemsRaw.get(first.uuid);
@@ -939,7 +952,7 @@ function buildClient(state: ClientState): SnClient {
     for (const change of group) {
       if (typeOf(change) !== raw.content_type) throw new Error(`Item ${first.uuid} has mixed note and tag changes`);
       if (change.revision !== revision) throw new Error("Stale revision; reconcile before retry");
-      if (change.kind === "tag_attach" || change.kind === "tag_detach") await writableNote(change.noteUuid);
+      if ((change.kind === "tag_attach" || change.kind === "tag_detach") && !created.has(change.noteUuid)) await writableNote(change.noteUuid);
     }
     if (raw.content_type === "Note") await writableNote(raw.uuid);
     const content = await decryptItemContent(raw, contentKeys());
@@ -976,8 +989,43 @@ function buildClient(state: ClientState): SnClient {
     const created = new Map<string, Creation>();
     const groups = new Map<string, EditChange[]>();
     const order: Array<Creation | string> = [];
+    const createdNotes = new Set<string>();
+    const merges = new Map<string, MergeChange>();
+    const addEdit = (edit: EditChange) => {
+      const group = groups.get(edit.uuid);
+      if (group) group.push(edit);
+      else { groups.set(edit.uuid, [edit]); order.push(edit.uuid); }
+    };
     for (const change of changes) {
       if (change.kind === "recovery") throw new Error("Recovery is internal; use prepareRecovery");
+      if (change.kind === "note_merge") {
+        const sources = new Set(change.sources.map((source) => source.uuid));
+        if (sources.size !== change.sources.length) throw new Error("Each merge source may appear once");
+        const sections: string[] = [];
+        for (const source of change.sources) {
+          const raw = state.encryptedItemsRaw.get(source.uuid);
+          if (!raw || raw.deleted || raw.content_type !== "Note") throw new Error(`Note ${source.uuid} not found`);
+          if (await itemRevision(raw) !== source.revision) throw new Error("Stale revision; reconcile before retry");
+          const content = await decryptItemContent(raw, contentKeys());
+          if (noteAccess(content).protected) throw new Error(`Note ${source.uuid} is protected`);
+          const body = plainBody(content);
+          sections.push(change.headings === false ? body : `## ${typeof content.title === "string" && content.title ? content.title : "Untitled"}\n\n${body}`);
+        }
+        const entry: Creation = { change: { kind: "note_create", title: change.title, text: sections.join(change.separator ?? "\n\n"),
+          noteType: change.noteType ?? "markdown" }, uuid: crypto.randomUUID(), notes: [] };
+        merges.set(entry.uuid, change);
+        createdNotes.add(entry.uuid);
+        order.push(entry);
+        if (change.trashSources !== false) {
+          for (const source of change.sources) addEdit({ kind: "note_trash", uuid: source.uuid, revision: source.revision });
+        }
+        // The merged note keeps every tag any source had.
+        for (const tag of state.tagsCache.values()) {
+          if (!tag.references.some((ref) => ref.content_type === "Note" && sources.has(ref.uuid))) continue;
+          addEdit({ kind: "tag_attach", uuid: tag.uuid, revision: await itemRevision(state.encryptedItemsRaw.get(tag.uuid)!), noteUuid: entry.uuid });
+        }
+        continue;
+      }
       if (change.kind === "note_create" || change.kind === "tag_create") {
         const entry: Creation = { change, uuid: crypto.randomUUID(), notes: [] };
         if (change.kind === "tag_create") {
@@ -997,11 +1045,8 @@ function buildClient(state: ClientState): SnClient {
         if (!entry.notes.includes(change.noteUuid)) entry.notes.push(change.noteUuid);
         continue;
       }
-      const edit = (change.kind === "tag_update" && typeof change.parent === "string"
-        ? { ...change, parent: resolve(change.parent) } : change) as EditChange;
-      const group = groups.get(edit.uuid);
-      if (group) group.push(edit);
-      else { groups.set(edit.uuid, [edit]); order.push(edit.uuid); }
+      addEdit((change.kind === "tag_update" && typeof change.parent === "string"
+        ? { ...change, parent: resolve(change.parent) } : change) as EditChange);
     }
     // The hierarchy after this batch must stay a forest: every parent exists, nothing is its own ancestor.
     const parentOf = new Map<string, string | null>();
@@ -1027,11 +1072,15 @@ function buildClient(state: ClientState): SnClient {
     }
     const plans: PreparedChange[] = [];
     for (const entry of order) {
-      if (typeof entry === "string") { plans.push(await planEdit(groups.get(entry)!, now)); continue; }
+      if (typeof entry === "string") { plans.push(await planEdit(groups.get(entry)!, now, createdNotes)); continue; }
       for (const noteUuid of entry.notes) await writableNote(noteUuid);
       const tagRefs: TagReference[] = [...(entry.parent ? [makeParentRef(entry.parent)] : []),
         ...entry.notes.map((uuid) => ({ uuid, content_type: "Note" }))];
-      plans.push(await planCreate(entry.change, now, entry.uuid, tagRefs));
+      const plan = await planCreate(entry.change, now, entry.uuid, tagRefs);
+      const merge = merges.get(entry.uuid);
+      // Label the new note as the merge so the preview and counts say what was asked for.
+      if (merge) { plan.change = { ...merge, sources: merge.sources.map((source) => ({ ...source })) }; (plan.preview as { kind: string }).kind = "note_merge"; }
+      plans.push(plan);
     }
     return plans;
   };
@@ -1130,8 +1179,10 @@ function buildClient(state: ClientState): SnClient {
     async prepareChange(change) {
       if (change.kind === "recovery") throw new Error("Recovery is internal; use prepareRecovery");
       await fullSync(state);
-      const [plan] = await planChanges([change]);
-      return plan!;
+      const plans = await planChanges([change]);
+      // A merge expands into several writes; dropping any of them would leave a half-done merge.
+      if (plans.length !== 1) throw new Error(`${change.kind} changes several items; use writes_prepare_batch`);
+      return plans[0]!;
     },
 
     async prepareChanges(changes) {
@@ -1221,6 +1272,7 @@ function buildClient(state: ClientState): SnClient {
       const pending = plans.filter(({ after }) => !done.has(after.uuid));
       if (options?.reconcileOnly || pending.length === 0) return outcome();
       // All-or-nothing preflight: one stale or protected item means nothing is sent.
+      const created = new Set(plans.filter((p) => !p.before).map((p) => p.after.uuid));
       for (const { before, after, change } of pending) {
         const current = state.encryptedItemsRaw.get(after.uuid);
         if (before ? !current || !sameCiphertext(current, before) ||
@@ -1228,9 +1280,8 @@ function buildClient(state: ClientState): SnClient {
           throw new Error(`Conflict on ${after.uuid}: expected item changed, disappeared, or UUID collided; nothing was sent`);
         }
         if (before?.content_type === "Note") await writableNote(before.uuid);
-        if (change.kind === "tag_attach" || change.kind === "tag_detach") await writableNote(change.noteUuid);
-        if (before?.content_type === "Tag") await writableTagTargets(before, after);
-        if (!before && after.content_type === "Tag") await writableTagTargets(null, after);
+        if ((change.kind === "tag_attach" || change.kind === "tag_detach") && !created.has(change.noteUuid)) await writableNote(change.noteUuid);
+        if (after.content_type === "Tag") await writableTagTargets(before, after, created);
         await decryptItemContent(after, contentKeys());
       }
       options?.signal?.throwIfAborted();

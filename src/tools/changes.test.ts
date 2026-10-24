@@ -46,6 +46,13 @@ describe("safe change boundary",()=>{
       {kind:"tag_update",uuid:"@work",revision,title:"x"},
     ]) expect(changeInput.safeParse(value).success).toBe(false);
   });
+  it("accepts note_merge with 2-50 distinct sources only",()=>{
+    const other="22222222-2222-4222-8222-222222222222";
+    expect(changeInput.safeParse({kind:"note_merge",title:"M",sources:[{uuid,revision},{uuid:other,revision}]}).success).toBe(true);
+    for(const sources of [[{uuid,revision}],[{uuid,revision},{uuid,revision}],[{uuid,revision},{uuid:other}]])
+      expect(changeInput.safeParse({kind:"note_merge",title:"M",sources}).success).toBe(false);
+    expect(changeInput.safeParse({kind:"note_merge",title:"M",sources:[{uuid,revision},{uuid:other,revision}],noteType:"super"}).success).toBe(false);
+  });
   it("validates UTF-8 bytes and strict operation IDs",()=>{
     expect(changeInput.safeParse({kind:"note_create",title:"t",text:"😀".repeat(3*1024*1024)}).success).toBe(false);
     expect(operationInput.safeParse({operationId:"../../escape"}).success).toBe(false);

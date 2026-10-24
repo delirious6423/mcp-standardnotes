@@ -15,6 +15,10 @@ export const changeInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("note_update"), uuid, revision, title: title.optional(), text: body.optional(), append: body.optional() }).strict(),
   z.object({ kind: z.literal("note_trash"), uuid, revision }).strict(),
   z.object({ kind: z.literal("note_restore"), uuid, revision }).strict(),
+  z.object({ kind: z.literal("note_merge"), title, sources: z.array(z.object({ uuid, revision }).strict()).min(2).max(50)
+    .refine((s) => new Set(s.map((x) => x.uuid)).size === s.length, "Each merge source may appear once"),
+    headings: z.boolean().optional(), separator: z.string().max(200).optional(), trashSources: z.boolean().optional(),
+    noteType: z.enum(["plain-text", "markdown"]).optional() }).strict(),
   z.object({ kind: z.literal("note_flags"), uuid, revision, archived: z.boolean().optional(), pinned: z.boolean().optional(), starred: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal("tag_create"), title: tagTitle, parent: tagTarget.optional(), ref: tagRef.optional() }).strict(),
   z.object({ kind: z.literal("tag_update"), uuid, revision, title: tagTitle.optional(), parent: tagTarget.nullable().optional() }).strict(),

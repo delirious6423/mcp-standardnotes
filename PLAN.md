@@ -15,7 +15,7 @@ every write previewed and approved by a human, reversible where Standard Notes a
 - [x] Archive, pin and star: `note_flags` change, flags in reads, `archived` filter on `notes_list`.
 - [x] Nested tags: `parent` on tag_create/tag_update, `@ref` names for tags created in the same batch, cycle checks; parent links match the official app (`content_type: "Tag"`).
 - [x] One synced client per server process with delta sync (keychain tokens adopted each call); after HTTP 429 every process for the account waits out Retry-After without sending.
-- [ ] Merge as one reviewable change (combined note plus trashing the sources).
+- [x] Merge as one reviewable change: `note_merge` in a batch creates the combined note, carries over tags and trashes the sources; one undo reverts it.
 - [ ] Own identity: rename the package and server id; disable the inherited npm/MCP Registry publish workflow.
 - [ ] Make this line the fork's `main`; run CI on it.
 - [ ] Bugs: launcher fails when called through a symlink; upstream #24 (installer through npm symlinks); `dump-note` dev script prints decrypted text.

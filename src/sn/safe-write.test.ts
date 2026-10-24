@@ -674,6 +674,44 @@ describe("batch writes", () => {
     expect(writes).toHaveLength(0);
   });
 
+  it("merges notes into one from their current text, keeps their tags, trashes them, and undoes in one step", async () => {
+    await put(tagUuid, "Tag", { title: "Tag", references: [{ uuid: note2, content_type: "Note" }] });
+    client = await createClientFromSession(config);
+    const sources = [{ uuid: noteUuid, revision: await revision() }, { uuid: note2, revision: await revision(note2) }, { uuid: note3, revision: await revision(note3) }];
+    const { plans, preview } = await client.prepareChanges([{ kind: "note_merge", title: "All in one", sources }]);
+    expect(preview.counts).toEqual({ note_merge: 1, note_trash: 3, tag_attach: 1 });
+    const merged = plans[0]!.after.uuid;
+    expect(preview.plan[0]).toMatchObject({ kinds: "note_merge", created: true, changes: {
+      text: { from: null, to: "## Original\n\nBody\n\n## Second\n\nTwo\n\n## Third\n\nThree" } } });
+    expect(preview.plan.at(-1)!.changes.references).toEqual({ removed: [], added: [{ uuid: merged, type: "Note", title: "All in one" }] });
+    expect((await client.commitChanges(plans)).unconfirmed).toEqual([]);
+    expect(await decryptItemContent(server.get(merged)!, keys)).toMatchObject({ title: "All in one", noteType: "markdown" });
+    for (const s of sources) expect(await decryptItemContent(server.get(s.uuid)!, keys)).toMatchObject({ trashed: true });
+    expect((await decryptItemContent(server.get(tagUuid)!, keys)).references).toEqual([{ uuid: note2, content_type: "Note" }, { uuid: merged, content_type: "Note" }]);
+    const undo = await client.prepareRecoveries(plans);
+    await client.commitChanges(undo.plans);
+    expect(await decryptItemContent(server.get(merged)!, keys)).toMatchObject({ trashed: true });
+    for (const s of sources) expect((await decryptItemContent(server.get(s.uuid)!, keys)).trashed).toBeUndefined();
+    expect((await decryptItemContent(server.get(tagUuid)!, keys)).references).toEqual([{ uuid: note2, content_type: "Note" }]);
+  });
+
+  it("merges without headings or trashing, and refuses protected, structured, stale or locked-and-trashed sources", async () => {
+    const two = async () => [{ uuid: noteUuid, revision: await revision() }, { uuid: note2, revision: await revision(note2) }];
+    await expect(client.prepareChange({ kind: "note_merge", title: "One", sources: await two() })).rejects.toThrow(/writes_prepare_batch/);
+    const plain = await client.prepareChanges([{ kind: "note_merge", title: "P", sources: await two(), headings: false, separator: "\n---\n", trashSources: false, noteType: "plain-text" }]);
+    expect(plain.preview.counts).toEqual({ note_merge: 1 });
+    expect(plain.preview.plan[0]!.changes.text).toEqual({ from: null, to: "Body\n---\nTwo" });
+    await expect(client.prepareChanges([{ kind: "note_merge", title: "S", sources: [{ uuid: noteUuid, revision: "0".repeat(64) }, { uuid: note2, revision: await revision(note2) }], trashSources: false }])).rejects.toThrow(/Stale/);
+    await edit(note2, { appData: { "org.standardnotes.sn": { locked: true } } });
+    await expect(client.prepareChanges([{ kind: "note_merge", title: "L", sources: await two() }])).rejects.toThrow(/locked/);
+    expect((await client.prepareChanges([{ kind: "note_merge", title: "L", sources: await two(), trashSources: false }])).plans).toHaveLength(1);
+    await edit(note2, { noteType: "super", appData: {} });
+    await expect(client.prepareChanges([{ kind: "note_merge", title: "X", sources: await two() }])).rejects.toThrow(/plain-text or markdown/);
+    await edit(note2, { noteType: "plain-text", protected: true });
+    await expect(client.prepareChanges([{ kind: "note_merge", title: "X", sources: await two(), trashSources: false }])).rejects.toThrow(/protected/);
+    expect(writes).toHaveLength(0);
+  });
+
   it("reads many notes with revisions from one sync and withholds protected notes", async () => {
     await edit(note3, { protected: true });
     mocks.sync.mockClear();

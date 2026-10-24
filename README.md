@@ -36,7 +36,9 @@ has been inactive since August 2026. It differs from upstream in what it allows:
 | `writes_undo_prepare` | Preview the undo of a committed operation |
 
 Change kinds: `note_create`, `note_update` (rename, replace or append text), `note_trash`, `note_restore`,
-`note_flags` (archive, pin, star or undo them), `tag_create` (optionally under a parent), `tag_update` (rename or
+`note_flags` (archive, pin, star or undo them), `note_merge` (batch only: one new note from 2–50 notes' text,
+each under its title as a heading, with all their tags; the sources are trashed unless `trashSources: false`),
+`tag_create` (optionally under a parent), `tag_update` (rename or
 move, `parent: null` for top level), `tag_attach`, `tag_detach`. Body edits support plain text and Markdown;
 other note types can be renamed, tagged or trashed without touching their body.
 
