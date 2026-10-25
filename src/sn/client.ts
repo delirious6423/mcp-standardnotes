@@ -1090,6 +1090,7 @@ function buildClient(state: ClientState): SnClient {
         return { confirmed, unconfirmed: [...uuids].filter((uuid) => !confirmed.includes(uuid)) };
       };
       let pending: PreparedChange[];
+      let pushError: unknown;
       // Everything up to the first push sends nothing; such failures leave the approval usable.
       try {
         for (const { before, after } of plans) {
@@ -1132,11 +1133,16 @@ function buildClient(state: ClientState): SnClient {
           // A conflict means someone else is writing; send nothing further.
           if (res.conflicts.length > 0) break;
         }
-      } catch {
+      } catch (error) {
         // Stop sending; the readback below decides what landed. No automatic retry.
+        pushError = error;
       }
       // Fetch from a null token, not from our just-written local cache.
-      await fullSync(state, true);
+      try {
+        await fullSync(state, true);
+      } catch (error) {
+        throw pushError ? new Error(`Read-back failed after a failed push: ${(error as Error).message}`, { cause: pushError }) : error;
+      }
       return outcome();
     },
 

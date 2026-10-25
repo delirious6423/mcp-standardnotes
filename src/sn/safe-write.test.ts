@@ -735,6 +735,19 @@ describe("batch writes", () => {
     expect(writes).toHaveLength(0);
   });
 
+  it("keeps a batch's push error as the cause when the read-back fails too", async () => {
+    const { plans } = await client.prepareChanges([{ kind: "note_create", title: "N", text: "x" }]);
+    let pushed = false;
+    mocks.sync.mockImplementation(async (_cfg: unknown, p: { items?: RawItem[] }) => {
+      if (p.items?.length) { pushed = true; throw new Error("push dropped"); }
+      if (pushed) throw new Error("read-back down");
+      return { retrieved_items: [...server.values()], saved_items: [], conflicts: [], sync_token: "token" };
+    });
+    const error = await client.commitChanges(plans).catch((e: unknown) => e as Error);
+    expect(error.message).toMatch(/read-back down/);
+    expect((error.cause as Error).message).toBe("push dropped");
+  });
+
   it("pushes creates first and trashes last, so a failed later chunk never leaves merge sources trashed alone", async () => {
     await put(tagUuid, "Tag", { title: "Tag", references: [{ uuid: noteUuid, content_type: "Note" }] });
     client = await createClientFromSession(config);

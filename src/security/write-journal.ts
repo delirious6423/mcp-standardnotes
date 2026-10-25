@@ -195,5 +195,5 @@ function previewOf(record: RecordEntry): unknown {
 
 function nothingSentMessage(id: string, error: unknown): Error {
   const reason = error instanceof Error ? error.message : String(error);
-  return new Error(`Nothing was sent for operation ${id} (${reason}). It is still approved until the preview expires: fix the cause and call writes_commit again, or, if an item changed, re-read it and prepare a new change.`, { cause: error });
+  return new Error(`Nothing was sent for operation ${id} (${reason}). It is still approved until the preview expires. If the cause was temporary (network, rate limit: wait first), call writes_commit again; if an item changed or became protected or locked, have the user reject this operation, re-read and prepare a new change.`, { cause: error });
 }
