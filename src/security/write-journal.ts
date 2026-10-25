@@ -7,6 +7,7 @@ import type { BatchPreview } from "../sn/batch-preview.js";
 import { decryptString, encryptString } from "../sn/protocol004.js";
 import { atomicPrivateWrite, privateDirectory } from "./account-state.js";
 import { openPrivateFile } from "./private-fs.js";
+import { NothingSentError } from "../sn/errors.js";
 
 interface RecordEntry {
   version: 1;
@@ -120,14 +121,25 @@ export class WriteJournal {
     if (record.batch) return this.commitBatch(client, record, reconcileOnly, signal);
     try {
       await client.commitChange(record.plan!, { reconcileOnly, ...(signal ? {signal} : {}) });
-    } catch {
+    } catch (error) {
+      if (await this.restoreIfNothingSent(record, reconcileOnly, error)) throw nothingSentMessage(id, error);
       record.status = "uncertain";
       await this.save(record);
-      throw new Error(`Operation ${id} was not confirmed. Do not prepare a replacement or blindly retry. Inspect the note and retry THIS operation ID to reconcile only (never resubmit); encrypted recovery data is retained.`);
+      throw new Error(`Operation ${id} was not confirmed. Do not prepare a replacement or blindly retry. Inspect the note and retry THIS operation ID to reconcile only (never resubmit); encrypted recovery data is retained.`, { cause: error });
     }
     record.status = "committed";
     await this.save(record);
     return { operationId: id, status: "committed", uuid: record.plan!.after.uuid };
+  }
+
+  // A first attempt that stopped before sending anything is still the approved, unsent preview:
+  // restore it so it can be committed again (until it expires) or rejected. A reconcile of an
+  // earlier attempt stays uncertain, because that attempt may have sent something.
+  private async restoreIfNothingSent(record: RecordEntry, reconcileOnly: boolean, error: unknown): Promise<boolean> {
+    if (reconcileOnly || !(error instanceof NothingSentError)) return false;
+    record.status = "prepared";
+    await this.save(record);
+    return true;
   }
 
   private async commitBatch(client: SnClient, record: RecordEntry, reconcileOnly: boolean, signal?: AbortSignal): Promise<unknown> {
@@ -137,12 +149,10 @@ export class WriteJournal {
     try {
       outcome = await client.commitChanges(batch.plans, { reconcileOnly, ...(signal ? {signal} : {}) });
     } catch (error) {
+      if (await this.restoreIfNothingSent(record, reconcileOnly, error)) throw nothingSentMessage(record.id, error);
       record.status = "uncertain";
       await this.save(record);
-      if (error instanceof Error && error.message.endsWith("nothing was sent")) {
-        throw new Error(`Batch ${record.id}: an item changed after preview, so nothing was sent. Re-read the items and prepare a new batch.`);
-      }
-      throw new Error(`Batch ${record.id} was not confirmed. Do not prepare a replacement or blindly retry. Retry THIS operation ID to reconcile only (never resubmits); encrypted recovery data is retained.`);
+      throw new Error(`Batch ${record.id} was not confirmed. Do not prepare a replacement or blindly retry. Retry THIS operation ID to reconcile only (never resubmits); encrypted recovery data is retained.`, { cause: error });
     }
     if (outcome.unconfirmed.length > 0) {
       record.status = "uncertain";
@@ -181,4 +191,9 @@ export class WriteJournal {
 
 function previewOf(record: RecordEntry): unknown {
   return record.plan ? record.plan.preview : record.batch!.preview;
+}
+
+function nothingSentMessage(id: string, error: unknown): Error {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new Error(`Nothing was sent for operation ${id} (${reason}). It is still approved until the preview expires: fix the cause and call writes_commit again, or, if an item changed, re-read it and prepare a new change.`, { cause: error });
 }

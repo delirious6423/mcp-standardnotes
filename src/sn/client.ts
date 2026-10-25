@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { fromHex, toHex, sha256Hex } from "./crypto.js";
 import { batchPreview, type BatchPreview } from "./batch-preview.js";
+import { nothingSent } from "./errors.js";
 
 export type SafeChange =
   | { kind: "note_create"; title: string; text: string; noteType?: "plain-text" | "markdown" }
@@ -1208,32 +1209,35 @@ function buildClient(state: ClientState): SnClient {
 
     async commitChange(plan, options) {
       const { before, after } = plan;
-      if (after.deleted !== false || !["Note", "Tag"].includes(after.content_type) ||
-          !after.content.startsWith("004:") || !after.enc_item_key.startsWith("004:") ||
-          (before && (before.uuid !== after.uuid || before.content_type !== after.content_type || before.deleted))) {
-        throw new Error("Invalid prepared change; permanent deletion is disabled");
-      }
-      await fullSync(state);
-      const current = state.encryptedItemsRaw.get(after.uuid);
-      if (current && sameCiphertext(current, after)) return;
-      if (options?.reconcileOnly) {
-        throw new Error("Write not confirmed; reconciliation only, no write sent");
-      }
-      if (before ? !current || !sameCiphertext(current, before) ||
-          await itemRevision(current) !== await itemRevision(before) : current !== undefined) {
-        throw new Error("Conflict: expected item changed, disappeared, or UUID collided; reconcile before retry");
-      }
-      if (before?.content_type === "Note") await writableNote(before.uuid);
-      if (plan.change.kind === "tag_attach" || plan.change.kind === "tag_detach") {
-        await writableNote(plan.change.noteUuid);
-      }
-      // Recovery may restore a tag's old references. Check all changed Note targets
-      // from ciphertext rather than trusting optional presentation metadata.
-      if (before?.content_type === "Tag") await writableTagTargets(before, after);
-      // Authenticate both ciphertext fields before transmitting even a restored plan.
-      await decryptItemContent(after, contentKeys());
-      // Cancellation during read-only preflight must not turn into a later mutation.
-      options?.signal?.throwIfAborted();
+      // Everything up to the send boundary sends nothing; such failures leave the approval usable.
+      try {
+        if (after.deleted !== false || !["Note", "Tag"].includes(after.content_type) ||
+            !after.content.startsWith("004:") || !after.enc_item_key.startsWith("004:") ||
+            (before && (before.uuid !== after.uuid || before.content_type !== after.content_type || before.deleted))) {
+          throw new Error("Invalid prepared change; permanent deletion is disabled");
+        }
+        await fullSync(state);
+        const current = state.encryptedItemsRaw.get(after.uuid);
+        if (current && sameCiphertext(current, after)) return;
+        if (options?.reconcileOnly) {
+          throw new Error("Write not confirmed; reconciliation only, no write sent");
+        }
+        if (before ? !current || !sameCiphertext(current, before) ||
+            await itemRevision(current) !== await itemRevision(before) : current !== undefined) {
+          throw new Error("Conflict: expected item changed, disappeared, or UUID collided; reconcile before retry");
+        }
+        if (before?.content_type === "Note") await writableNote(before.uuid);
+        if (plan.change.kind === "tag_attach" || plan.change.kind === "tag_detach") {
+          await writableNote(plan.change.noteUuid);
+        }
+        // Recovery may restore a tag's old references. Check all changed Note targets
+        // from ciphertext rather than trusting optional presentation metadata.
+        if (before?.content_type === "Tag") await writableTagTargets(before, after);
+        // Authenticate both ciphertext fields before transmitting even a restored plan.
+        await decryptItemContent(after, contentKeys());
+        // Cancellation during read-only preflight must not turn into a later mutation.
+        options?.signal?.throwIfAborted();
+      } catch (error) { throw nothingSent(error); }
       try {
         const res = await pushItems([after]);
         if (res.conflicts.length > 0) throw new Error("Conflict; no automatic retry");
@@ -1243,22 +1247,13 @@ function buildClient(state: ClientState): SnClient {
         await fullSync(state, true);
         const readback = state.encryptedItemsRaw.get(after.uuid);
         if (!readback || !sameCiphertext(readback, after)) throw new Error("Readback identity not confirmed");
-      } catch {
-        throw new Error("Write outcome uncertain or conflicted; reconcile before retry. No automatic retry.");
+      } catch (error) {
+        throw new Error("Write outcome uncertain or conflicted; reconcile before retry. No automatic retry.", { cause: error });
       }
     },
 
     async commitChanges(plans, options) {
       const uuids = new Set<string>();
-      for (const { before, after } of plans) {
-        if (after.deleted !== false || !["Note", "Tag"].includes(after.content_type) ||
-            !after.content.startsWith("004:") || !after.enc_item_key.startsWith("004:") ||
-            (before && (before.uuid !== after.uuid || before.content_type !== after.content_type || before.deleted))) {
-          throw new Error("Invalid prepared change; permanent deletion is disabled");
-        }
-        if (uuids.has(after.uuid)) throw new Error("A batch may write each item only once");
-        uuids.add(after.uuid);
-      }
       const landed = () => plans.filter(({ after }) => {
         const current = state.encryptedItemsRaw.get(after.uuid);
         return current !== undefined && sameCiphertext(current, after);
@@ -1267,24 +1262,37 @@ function buildClient(state: ClientState): SnClient {
         const confirmed = landed();
         return { confirmed, unconfirmed: [...uuids].filter((uuid) => !confirmed.includes(uuid)) };
       };
-      await fullSync(state);
-      const done = new Set(landed());
-      const pending = plans.filter(({ after }) => !done.has(after.uuid));
-      if (options?.reconcileOnly || pending.length === 0) return outcome();
-      // All-or-nothing preflight: one stale or protected item means nothing is sent.
-      const created = new Set(plans.filter((p) => !p.before).map((p) => p.after.uuid));
-      for (const { before, after, change } of pending) {
-        const current = state.encryptedItemsRaw.get(after.uuid);
-        if (before ? !current || !sameCiphertext(current, before) ||
-            await itemRevision(current) !== await itemRevision(before) : current !== undefined) {
-          throw new Error(`Conflict on ${after.uuid}: expected item changed, disappeared, or UUID collided; nothing was sent`);
+      let pending: PreparedChange[];
+      // Everything up to the first push sends nothing; such failures leave the approval usable.
+      try {
+        for (const { before, after } of plans) {
+          if (after.deleted !== false || !["Note", "Tag"].includes(after.content_type) ||
+              !after.content.startsWith("004:") || !after.enc_item_key.startsWith("004:") ||
+              (before && (before.uuid !== after.uuid || before.content_type !== after.content_type || before.deleted))) {
+            throw new Error("Invalid prepared change; permanent deletion is disabled");
+          }
+          if (uuids.has(after.uuid)) throw new Error("A batch may write each item only once");
+          uuids.add(after.uuid);
         }
-        if (before?.content_type === "Note") await writableNote(before.uuid);
-        if ((change.kind === "tag_attach" || change.kind === "tag_detach") && !created.has(change.noteUuid)) await writableNote(change.noteUuid);
-        if (after.content_type === "Tag") await writableTagTargets(before, after, created);
-        await decryptItemContent(after, contentKeys());
-      }
-      options?.signal?.throwIfAborted();
+        await fullSync(state);
+        const done = new Set(landed());
+        pending = plans.filter(({ after }) => !done.has(after.uuid));
+        if (options?.reconcileOnly || pending.length === 0) return outcome();
+        // All-or-nothing preflight: one stale or protected item means nothing is sent.
+        const created = new Set(plans.filter((p) => !p.before).map((p) => p.after.uuid));
+        for (const { before, after, change } of pending) {
+          const current = state.encryptedItemsRaw.get(after.uuid);
+          if (before ? !current || !sameCiphertext(current, before) ||
+              await itemRevision(current) !== await itemRevision(before) : current !== undefined) {
+            throw new Error(`Conflict on ${after.uuid}: expected item changed, disappeared, or UUID collided; nothing was sent`);
+          }
+          if (before?.content_type === "Note") await writableNote(before.uuid);
+          if ((change.kind === "tag_attach" || change.kind === "tag_detach") && !created.has(change.noteUuid)) await writableNote(change.noteUuid);
+          if (after.content_type === "Tag") await writableTagTargets(before, after, created);
+          await decryptItemContent(after, contentKeys());
+        }
+        options?.signal?.throwIfAborted();
+      } catch (error) { throw nothingSent(error); }
       try {
         for (let i = 0; i < pending.length; i += BATCH_PUSH) {
           options?.signal?.throwIfAborted();

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PreparedChange, SnClient } from "../sn/client.js";
 import { WriteJournal } from "./write-journal.js";
+import { NothingSentError } from "../sn/errors.js";
 import { withAccountLock, unlockAbandonedAccount, privateDirectory } from "./account-state.js";
 
 const plan = { before: { content: "prior ciphertext" }, after: { uuid: "11111111-1111-4111-8111-111111111111", content: "new ciphertext" }, preview: { title: "PRIVATE TITLE", text: "PRIVATE BODY" }, change: {kind:"note_create",title:"PRIVATE TITLE",text:"PRIVATE BODY"} } as unknown as PreparedChange;
@@ -132,7 +133,32 @@ describe("account-wide cross-process exclusion", { timeout: 120_000 }, () => {
     expect(await j.prepareUndo(c, prepared.operationId)).toMatchObject({ skipped: [{ uuid: a, reason: "tag_create" }] });
     const conflicted = await j.prepareBatch(c, []) as { operationId: string };
     await j.approve(conflicted.operationId);
-    vi.mocked(c.commitChanges).mockRejectedValueOnce(new Error(`Conflict on ${a}: expected item changed, disappeared, or UUID collided; nothing was sent`));
-    await expect(j.commit(c, conflicted.operationId)).rejects.toThrow(/nothing was sent. Re-read/);
+    vi.mocked(c.commitChanges).mockRejectedValueOnce(new NothingSentError(`Conflict on ${a}: expected item changed; nothing was sent`));
+    await expect(j.commit(c, conflicted.operationId)).rejects.toThrow(/Nothing was sent for operation .*still approved/);
+    expect(await j.status(conflicted.operationId)).toMatchObject({ status: "prepared", approved: true });
+    await j.reject(conflicted.operationId);
+    expect(await j.status(conflicted.operationId)).toMatchObject({ status: "rejected" });
+  }));
+
+  it("keeps an approval usable after a commit that sent nothing, but never after a possible send", async () => fixture(async (dir) => {
+    const c = fake();
+    const j = new WriteJournal(dir, new Uint8Array(32).fill(9));
+    const op = (await j.prepare(c, { kind: "note_create", title: "t", text: "b" }) as { operationId: string }).operationId;
+    await j.approve(op);
+    vi.mocked(c.commitChange).mockRejectedValueOnce(new NothingSentError("Rate limited"));
+    await expect(j.commit(c, op)).rejects.toThrow(/Nothing was sent .*Rate limited/);
+    expect(await j.status(op)).toMatchObject({ status: "prepared", approved: true });
+    expect(await j.commit(c, op)).toMatchObject({ status: "committed" });
+    expect(vi.mocked(c.commitChange).mock.calls.map((call) => call[1])).toEqual([{ reconcileOnly: false }, { reconcileOnly: false }]);
+
+    // An error after the send boundary is uncertain; a later reconcile that sends nothing stays uncertain.
+    const op2 = (await j.prepare(c, { kind: "note_create", title: "t", text: "b" }) as { operationId: string }).operationId;
+    await j.approve(op2);
+    vi.mocked(c.commitChange).mockRejectedValueOnce(new Error("socket hang up"));
+    await expect(j.commit(c, op2)).rejects.toThrow(/not confirmed/);
+    vi.mocked(c.commitChange).mockRejectedValueOnce(new NothingSentError("reconciliation only"));
+    await expect(j.commit(c, op2)).rejects.toThrow(/not confirmed/);
+    expect(await j.status(op2)).toMatchObject({ status: "uncertain" });
+    await expect(j.reject(op2)).rejects.toThrow(/Already attempted/);
   }));
 });

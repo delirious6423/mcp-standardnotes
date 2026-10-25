@@ -9,6 +9,7 @@ import { createClientFromSession, itemRevision, type SnClient } from "./client.j
 import { decryptItemContent, encryptString, replaceItemContent } from "./protocol004.js";
 import { randomBytes, toHex } from "./crypto.js";
 import type { RawItem } from "./http.js";
+import { NothingSentError } from "./errors.js";
 
 // All keys and encrypted records below are synthetic; no account, keychain, or network.
 const config = { serverUrl: "https://example.invalid", email: "test@example.invalid" };
@@ -164,6 +165,26 @@ describe("bounded safe writes", () => {
     await expect(client.prepareChange({ kind: "tag_attach", uuid: tagUuid, revision: await revision(tagUuid), noteUuid })).rejects.toThrow(/Malformed note/);
     await expect(client.commitChange(tagPlan)).rejects.toThrow(/Malformed note/);
     expect(writes).toHaveLength(0);
+  });
+
+  it("marks every failure before the send boundary as nothing sent, and failures after it as uncertain", async () => {
+    const plan = await client.prepareChange({ kind: "note_trash", uuid: noteUuid, revision: await revision() });
+    const batch = await client.prepareChanges([{ kind: "note_trash", uuid: noteUuid, revision: await revision() }]);
+    mocks.sync.mockRejectedValueOnce(new Error("preflight sync failed"));
+    await expect(client.commitChange(plan)).rejects.toBeInstanceOf(NothingSentError);
+    mocks.sync.mockRejectedValueOnce(new Error("preflight sync failed"));
+    await expect(client.commitChanges(batch.plans)).rejects.toBeInstanceOf(NothingSentError);
+    await edit(noteUuid, { protected: true });
+    await expect(client.commitChange(plan)).rejects.toBeInstanceOf(NothingSentError);
+    await expect(client.commitChanges(batch.plans)).rejects.toBeInstanceOf(NothingSentError);
+    expect(writes).toHaveLength(0);
+    await edit(noteUuid, { protected: false });
+    const fresh = await client.prepareChange({ kind: "note_trash", uuid: noteUuid, revision: await revision() });
+    failure = "uncertain";
+    const sent = await client.commitChange(fresh).catch((e: unknown) => e);
+    expect(sent).toBeInstanceOf(Error);
+    expect(sent).not.toBeInstanceOf(NothingSentError);
+    expect(writes).toHaveLength(1);
   });
 
   it("returns note text and revision from one sync snapshot when the next snapshot changes", async () => {
