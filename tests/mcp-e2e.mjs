@@ -235,11 +235,13 @@ try {
   await approve(declined.operationId,'reject');
   check((await call(a,'writes_status',{operationId:declined.operationId})).status==='rejected','terminal rejection is durable');
   const beforeReject=writes;await rejected(a,'writes_commit',{operationId:declined.operationId});check(writes===beforeReject,'rejected ID never writes');
-  // Rotation must be loaded fresh by the other stdio process.
+  // Rotation must be loaded fresh by the other stdio process. notes_get always syncs (a cached list may not):
+  // A meets the 401 and refreshes; B must adopt A's rotated tokens from the keychain, not refresh again.
   access='force-expired';
-  await call(a,'notes_list',{});
-  await call(b,'notes_list',{});
-  check(refreshed===1,'two clients share refreshed session safely');
+  const refreshedBefore=refreshed;
+  await call(a,'notes_get',{uuid:noteId});
+  await call(b,'notes_get',{uuid:noteId});
+  check(refreshed===refreshedBefore+1 && refreshed===1,'two clients share refreshed session safely');
   const entries=(await keytar.findCredentials(service)).map(c=>c.account);
   check(entries.length===1 && entries[0]===`${email} (${endpoint})`,'the email-only session moved to its server-scoped keychain entry on rotation');
   // One client per process: further reads are delta syncs, not full downloads.

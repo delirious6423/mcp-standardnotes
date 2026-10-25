@@ -88,6 +88,8 @@ function sameCiphertext(a: http.RawItem, b: http.RawItem): boolean {
 export interface SnClient {
   /** Tokens in use. The keychain is the shared source of truth between processes. */
   sessionTokens(): { access: string; refresh: string };
+  /** False after a failed sync, or a push not yet followed by a sync: then the cache may be incomplete. */
+  inSync(): boolean;
   /** Use tokens another process rotated, before the next request. */
   adoptTokens(access: string, refresh: string): void;
   prepareChange(change: SafeChange): Promise<PreparedChange>;
@@ -147,6 +149,10 @@ interface ClientState {
   // Timestamp (ms) of the last successful fullSync — drives ensureFresh's
   // TTL check. Set to 0 before the first sync so ensureFresh always fires.
   lastSyncAt: number;
+  // True only between a completed sync and the next push or sync attempt. A sync can fail after clearing
+  // the maps, and a push advances the token past items it does not store; until a sync completes the
+  // cache is not trusted (the next sync starts from scratch and the account layer drops the client).
+  consistent: boolean;
   // UUIDs whose payload failed to decrypt on the most recent fullSync
   // pass. Reset at the start of every fullSync so a fix upstream (e.g. an
   // items_key that arrives on a later sync page) can clear the count.
@@ -234,6 +240,7 @@ export async function createClientFromLogin(
     encryptedItemsRaw: new Map(),
     syncToken: null,
     lastSyncAt: 0,
+    consistent: false,
     decryptFailedNotes: new Set(),
     decryptFailedTags: new Set(),
   };
@@ -296,6 +303,7 @@ export async function createClientFromSession(
     // reuse if we ever start caching the encrypted vault snapshot too.
     syncToken: null,
     lastSyncAt: 0,
+    consistent: false,
     decryptFailedNotes: new Set(),
     decryptFailedTags: new Set(),
   };
@@ -377,7 +385,7 @@ function itemKeys(state: ClientState, allowUuidMismatch: boolean): ItemKeys {
 }
 
 async function fullSync(state: ClientState, reset = false): Promise<void> {
-  if (reset) {
+  if (reset || !state.consistent) {
     state.syncToken = null;
     state.encryptedItemsRaw.clear();
     state.notesCache.clear();
@@ -386,6 +394,8 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
     state.legacyKeys = [];
     state.defaultItemsKeyUuid = null;
   }
+  state.consistent = false;
+  state.lastSyncAt = 0;
   // Reset the failure counters at the top so a fix upstream (e.g. an
   // items_key that arrives on a later page) doesn't leave stale entries.
   state.decryptFailedNotes.clear();
@@ -477,6 +487,7 @@ async function fullSync(state: ClientState, reset = false): Promise<void> {
   }
 
   state.lastSyncAt = Date.now();
+  state.consistent = true;
 
   logger.info("Sync complete", {
     notes: state.notesCache.size,
@@ -583,6 +594,8 @@ function buildClient(state: ClientState): SnClient {
     if (items.some((item) => (item as { deleted?: unknown })?.deleted === true)) {
       throw new Error("Permanent deletion is disabled");
     }
+    // The push response's retrieved items are not stored, but its token is kept: only a sync repairs that.
+    state.consistent = false;
     const res = await callSync(state, {
       syncToken: state.syncToken ?? undefined,
       items,
@@ -926,6 +939,10 @@ function buildClient(state: ClientState): SnClient {
   };
 
   return {
+    inSync() {
+      return state.consistent;
+    },
+
     sessionTokens() {
       return { access: state.authToken, refresh: state.refreshToken };
     },

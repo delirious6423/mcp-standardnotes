@@ -159,24 +159,7 @@ interface SnEnvelope<T> {
   data?: (T & { error?: SnError }) | undefined;
 }
 
-// Requests that threw (network, timeout, HTTP error, unparsable body) in this process; the account layer
-// keeps its synced client across tool errors unless one of these happened during the call.
-let failedRequests = 0;
-
-export function failedRequestCount(): number {
-  return failedRequests;
-}
-
 async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
-  try {
-    return await snFetchOnce<T>(url, init);
-  } catch (error) {
-    failedRequests++;
-    throw error;
-  }
-}
-
-async function snFetchOnce<T>(url: string, init: RequestInit): Promise<T> {
   const headers = new Headers(init.headers);
   // Honest UA (see HONEST_UA declaration above). Do NOT reintroduce
   // browser-UA spoofing here — Cloudflare now challenges impersonators

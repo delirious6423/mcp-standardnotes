@@ -16,8 +16,10 @@ const session = (access: string, refresh: string, masterKeyHex = "k".repeat(64))
   serverUrl: "https://api.standardnotes.com", email: "a@example.invalid", masterKeyHex, sessionPayload: { access_token: access, refresh_token: refresh } });
 const fakeClient = () => {
   let tokens = { access: "", refresh: "" };
+  let synced = true;
   return { sessionTokens: () => tokens, adoptTokens: vi.fn((access: string, refresh: string) => { tokens = { access, refresh }; }),
-    setTokens: (access: string, refresh: string) => { tokens = { access, refresh }; } };
+    setTokens: (access: string, refresh: string) => { tokens = { access, refresh }; },
+    inSync: () => synced, setInSync: (value: boolean) => { synced = value; } };
 };
 
 let dir: string;
@@ -34,10 +36,10 @@ afterEach(async () => { vi.unstubAllEnvs(); vi.useRealTimers(); await rm(path.di
 
 // Windows private-file checks launch PowerShell, about a second each.
 describe("per-process client", { timeout: 120_000 }, () => {
-  it("reuses one client, adopts rotated keychain tokens, and rebuilds after re-login or a failed request", async () => {
+  it("reuses one client, adopts rotated keychain tokens, and rebuilds after re-login or when it is out of sync", async () => {
     const first = fakeClient(); first.setTokens("a1", "r1");
     const second = fakeClient();
-    mocks.create.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValue(fakeClient());
+    mocks.create.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockImplementation(async () => fakeClient());
     mocks.load.mockResolvedValue(session("a1", "r1"));
     expect(await withClient(async (c) => c)).toBe(first);
     expect(await withClient(async (c) => c)).toBe(first);
@@ -51,18 +53,13 @@ describe("per-process client", { timeout: 120_000 }, () => {
     // A local error (bad UUID, stale revision) keeps the synced client; no full re-sync follows.
     await expect(withClient(async () => { throw new Error("Note not found"); })).rejects.toThrow("not found");
     expect(await withClient(async (c) => c)).toBe(second);
-    // A request that failed during the call drops it, even when the error that escapes is a different one.
-    const server = http.createServer((_req, res) => { res.writeHead(500); res.end("{}"); });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    try {
-      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      await expect(withClient(async () => {
-        await refreshSession({ serverUrl: url }, "SYNTHETIC", "SYNTHETIC").catch(() => undefined);
-        throw new Error("Commit was not confirmed");
-      })).rejects.toThrow("not confirmed");
-    } finally { await new Promise((r) => server.close(r)); }
-    expect(await withClient(async (c) => c)).not.toBe(second);
-    expect(mocks.create).toHaveBeenCalledTimes(3);
+    // A client whose state may be incomplete (failed sync, push without read-back) is dropped, error or not.
+    await expect(withClient(async () => { second.setInSync(false); throw new Error("Conflict"); })).rejects.toThrow("Conflict");
+    const third = await withClient(async (c) => c);
+    expect(third).not.toBe(second);
+    (third as unknown as ReturnType<typeof fakeClient>).setInSync(false);
+    expect(await withClient(async (c) => c)).not.toBe(third);
+    expect(mocks.create).toHaveBeenCalledTimes(4);
   });
 
   it("after HTTP 429 sends nothing until Retry-After has passed, across processes sharing the state dir", async () => {

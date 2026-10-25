@@ -449,6 +449,44 @@ describe("incremental sync", () => {
   });
 });
 
+describe("client consistency after failures", () => {
+  const params = () => mocks.sync.mock.calls.map((call) => call[1] as { syncToken?: string; items?: unknown[] });
+
+  it("a single commit that conflicts after its push is out of sync until a sync from scratch", async () => {
+    const plan = await client.prepareChange({ kind: "note_trash", uuid: noteUuid, revision: await revision() });
+    failure = "conflict";
+    await expect(client.commitChange(plan)).rejects.toThrow();
+    expect(client.inSync()).toBe(false);
+    failure = undefined;
+    mocks.sync.mockClear();
+    await client.getNoteWithRevision(noteUuid);
+    expect(params()[0]!.syncToken).toBeUndefined();
+    expect(client.inSync()).toBe(true);
+  });
+
+  it("a sync that fails after clearing its cache is not served as fresh", async () => {
+    expect((await client.listNotes({ limit: 10, offset: 0, includeTrashed: false })).length).toBe(1);
+    // A commit's read-back clears the maps first, then meets a malformed 200.
+    const plan = await client.prepareChange({ kind: "note_trash", uuid: noteUuid, revision: await revision() });
+    const base = mocks.sync.getMockImplementation()!;
+    let pushed = false;
+    mocks.sync.mockImplementation(async (cfg: unknown, p: { items?: RawItem[] }) => {
+      if (pushed) return {} as never;
+      if (p.items?.length) pushed = true;
+      return base(cfg, p);
+    });
+    await expect(client.commitChange(plan)).rejects.toThrow();
+    expect(client.inSync()).toBe(false);
+    mocks.sync.mockImplementation(base);
+    mocks.sync.mockClear();
+    // Within the default 30 s TTL, the next read still syncs (from scratch) instead of returning an empty vault.
+    const notes = await client.listNotes({ limit: 10, offset: 0, includeTrashed: true });
+    expect(params()).toHaveLength(1);
+    expect(params()[0]!.syncToken).toBeUndefined();
+    expect(notes.map((n) => n.uuid)).toEqual([noteUuid]);
+  });
+});
+
 describe("batch writes", () => {
   const note2 = "55555555-5555-4555-8555-555555555555";
   const note3 = "66666666-6666-4666-8666-666666666666";

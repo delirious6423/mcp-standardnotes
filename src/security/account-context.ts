@@ -1,7 +1,7 @@
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { createClientFromSession, type SnClient } from "../sn/client.js";
-import { failedRequestCount, SnApiError, takeRateLimit } from "../sn/http.js";
+import { SnApiError, takeRateLimit } from "../sn/http.js";
 import { loadSession, recoveryKey, resolveEmail } from "../sn/session.js";
 import { accountDirectory, atomicPrivateWrite, privateDirectory, withAccountLock } from "./account-state.js";
 import { openPrivateFile } from "./private-fs.js";
@@ -17,9 +17,9 @@ export async function stateDirectory(server: string, email: string): Promise<str
 }
 
 // One synced client per process: after the first call, each call sends a delta sync instead of
-// downloading the whole vault. A local error (bad UUID, stale revision, invalid change) keeps it: its sync
-// token only advances once items are stored, and approved commits end with a full re-sync. It is dropped
-// when a request failed during the call, so the next call starts from a clean sync.
+// downloading the whole vault. A local error (bad UUID, stale revision, invalid change) keeps it. It is
+// dropped whenever its own state may be incomplete (a sync failed, or a push was not followed by a sync),
+// so the next call starts from a clean sync.
 let cached: { key: string; masterKeyHex: string; client: SnClient } | undefined;
 
 /** Test hook: forget the per-process client. */
@@ -76,7 +76,7 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
         throw new Error("Keychain session does not match this account/server; sign in with `standardnotes-mcp login` in your terminal");
       }
       const key = `${serverUrl}\n${email}`;
-      if (cached && cached.key === key && cached.masterKeyHex === stored.masterKeyHex) {
+      if (cached && cached.key === key && cached.masterKeyHex === stored.masterKeyHex && cached.client.inSync()) {
         // Another process may have rotated the tokens; the keychain copy is current under this lock.
         const { access_token: access, refresh_token: refresh } = stored.sessionPayload;
         const used = cached.client.sessionTokens();
@@ -92,12 +92,10 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
       return new WriteJournal(dir, await recoveryKey(path.basename(dir), !hasRecords));
     };
     let failure: unknown;
-    const failedBefore = failedRequestCount();
     try {
       return await fn(client, journal, email);
     } catch (error) {
       failure = error;
-      if (failedRequestCount() !== failedBefore) cached = undefined;
       throw error;
     } finally {
       // Also when a commit wrapped the 429 in its own error, or a batch read-back succeeded after it.
