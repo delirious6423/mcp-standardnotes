@@ -1,4 +1,6 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +10,7 @@ vi.mock("../sn/client.js", () => ({ createClientFromSession: mocks.create }));
 vi.mock("../sn/session.js", () => ({ loadSession: mocks.load, resolveEmail: async () => "a@example.invalid", recoveryKey: async () => new Uint8Array(32) }));
 
 const { withClient, resetClientCache } = await import("./account-context.js");
-const { SnApiError } = await import("../sn/http.js");
+const { SnApiError, refreshSession } = await import("../sn/http.js");
 
 const session = (access: string, refresh: string, masterKeyHex = "k".repeat(64)) => ({
   serverUrl: "https://api.standardnotes.com", email: "a@example.invalid", masterKeyHex, sessionPayload: { access_token: access, refresh_token: refresh } });
@@ -66,6 +68,26 @@ describe("per-process client", { timeout: 120_000 }, () => {
     await withClient(work);
     expect(work).toHaveBeenCalledOnce();
     expect(await readdir(account)).not.toContain("rate-limited-until.json");
+  });
+
+  it("records a 429 that a commit wrapped in its own error, or that a successful call swallowed", async () => {
+    mocks.load.mockResolvedValue(session("a", "r"));
+    mocks.create.mockResolvedValue(fakeClient());
+    const limited = new SnApiError("Rate limited", "rate-limited", 429, { retryAfter: "60" });
+    await expect(withClient(async () => { throw new Error("Operation x was not confirmed", { cause: new Error("uncertain", { cause: limited }) }); })).rejects.toThrow();
+    const account = path.join(dir, (await readdir(dir))[0]!);
+    expect(await readdir(account)).toContain("rate-limited-until.json");
+    await rm(path.join(account, "rate-limited-until.json"));
+    // A 429 seen by the HTTP layer counts even when the call itself swallows it and returns normally.
+    const server = http.createServer((_req, res) => { res.writeHead(429, { "Retry-After": "60" }); res.end("{}"); });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      await withClient(async () => {
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        await refreshSession({ serverUrl: url }, "SYNTHETIC", "SYNTHETIC").catch(() => undefined);
+      });
+    } finally { await new Promise((r) => server.close(r)); }
+    expect(await readdir(account)).toContain("rate-limited-until.json");
   });
 
   it("ignores a malformed or implausibly distant rate-limit marker", async () => {

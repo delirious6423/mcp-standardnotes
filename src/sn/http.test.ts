@@ -9,7 +9,7 @@ vi.mock("undici", () => ({
   },
 }));
 
-import { getLoginParams, SnApiError } from "./http.js";
+import { getLoginParams, SnApiError, takeRateLimit } from "./http.js";
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -46,6 +46,13 @@ describe("snFetch (via getLoginParams)", () => {
   // spoofing we did between v0.3.2 and v0.5.0 is now flagged as impersonation
   // (HTTP 403, cf-mitigated: challenge) because CF cross-checks UA vs TLS
   // fingerprint. Reproduced from a residential IP on 2026-08-04.
+  it("remembers the last 429 for the account layer until taken", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 429, headers: { "Retry-After": "30" } }));
+    await expect(getLoginParams({ serverUrl: "https://example.test" }, "a@b.co", "challenge")).rejects.toThrow(/429/);
+    expect(takeRateLimit()).toMatchObject({ status: 429, payload: { retryAfter: "30" } });
+    expect(takeRateLimit()).toBeUndefined();
+  });
+
   it("refuses to follow redirects", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(validLoginParams));
     await getLoginParams({ serverUrl: "https://example.test" }, "a@b.co", "challenge");

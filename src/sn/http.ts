@@ -201,7 +201,7 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
   if (res.status === 429) {
     const retryAfter = res.headers.get("retry-after");
     const hint = retryAfter ? ` Retry after ${retryAfter}s.` : "";
-    throw new SnApiError(
+    throw lastRateLimit = new SnApiError(
       `Rate limited by Standard Notes server (HTTP 429).${hint} ` +
         `Wait before retrying — do not loop.`,
       "rate-limited",
@@ -258,6 +258,16 @@ export function computeCodeChallenge(verifier: string): string {
 }
 
 // ----- Auth endpoints -----
+
+// Callers wrap errors (commit paths keep only "uncertain"), so the account layer reads the last 429 here.
+let lastRateLimit: SnApiError | undefined;
+
+/** Returns and clears the most recent HTTP 429 seen by this process. */
+export function takeRateLimit(): SnApiError | undefined {
+  const seen = lastRateLimit;
+  lastRateLimit = undefined;
+  return seen;
+}
 
 export async function getLoginParams(
   cfg: HttpConfig,

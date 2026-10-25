@@ -1,7 +1,7 @@
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createClientFromSession, type SnClient } from "../sn/client.js";
-import { SnApiError } from "../sn/http.js";
+import { SnApiError, takeRateLimit } from "../sn/http.js";
 import { loadSession, recoveryKey, resolveEmail } from "../sn/session.js";
 import { accountDirectory, privateDirectory, withAccountLock } from "./account-state.js";
 import { WriteJournal } from "./write-journal.js";
@@ -45,12 +45,20 @@ async function recordRateLimit(dir: string, error: SnApiError): Promise<void> {
   await writeFile(path.join(dir, RATE_LIMIT_FILE), JSON.stringify({ until: Date.now() + wait }), { mode: 0o600 });
 }
 
+function rateLimitIn(error: unknown): SnApiError | undefined {
+  for (let e = error; e instanceof Error; e = e.cause) {
+    if (e instanceof SnApiError && e.status === 429) return e;
+  }
+  return undefined;
+}
+
 /** `email` is the single identity that opened this account directory, keychain session and journal. */
 export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journal: () => Promise<WriteJournal>, email: string) => Promise<T>): Promise<T> {
   const serverUrl = configuredServerUrl();
   const email = await resolveEmail(serverUrl);
   const dir = await stateDirectory(serverUrl, email);
   return withAccountLock(dir, async () => {
+    takeRateLimit(); // A 429 from an earlier call was handled then.
     const client = async (): Promise<SnClient> => {
       const until = await rateLimitedUntil(dir);
       if (until > Date.now()) {
@@ -77,12 +85,17 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
       const hasRecords = (await readdir(dir)).some((name) => name.endsWith(".enc"));
       return new WriteJournal(dir, await recoveryKey(path.basename(dir), !hasRecords));
     };
+    let failure: unknown;
     try {
       return await fn(client, journal, email);
     } catch (error) {
+      failure = error;
       cached = undefined;
-      if (error instanceof SnApiError && error.status === 429) await recordRateLimit(dir, error);
       throw error;
+    } finally {
+      // Also when a commit wrapped the 429 in its own error, or a batch read-back succeeded after it.
+      const limited = takeRateLimit() ?? rateLimitIn(failure);
+      if (limited) await recordRateLimit(dir, limited);
     }
   });
 }
