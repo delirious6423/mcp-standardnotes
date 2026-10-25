@@ -1090,6 +1090,9 @@ function buildClient(state: ClientState): SnClient {
         if (options?.reconcileOnly || pending.length === 0) return outcome();
         // All-or-nothing preflight: one stale or protected item means nothing is sent.
         const created = new Set(plans.filter((p) => !p.before).map((p) => p.after.uuid));
+        // Push order across chunks: creates, then edits, then anything left trashed. If a later chunk fails,
+        // a merge's new note and tags exist before its sources are trashed, and undo restores before it trashes.
+        const rank = new Map<string, number>();
         for (const { before, after, change } of pending) {
           const current = state.encryptedItemsRaw.get(after.uuid);
           if (before ? !current || !sameCiphertext(current, before) ||
@@ -1099,8 +1102,10 @@ function buildClient(state: ClientState): SnClient {
           if (before?.content_type === "Note") await writableNote(before.uuid);
           if ((change.kind === "tag_attach" || change.kind === "tag_detach") && !created.has(change.noteUuid)) await writableNote(change.noteUuid);
           if (after.content_type === "Tag") await writableTagTargets(before, after, created);
-          await decryptItemContent(after, contentKeys());
+          const content = await decryptItemContent(after, contentKeys());
+          rank.set(after.uuid, !before ? 0 : content.trashed === true ? 2 : 1);
         }
+        pending.sort((a, b) => rank.get(a.after.uuid)! - rank.get(b.after.uuid)!);
         options?.signal?.throwIfAborted();
       } catch (error) { throw nothingSent(error); }
       try {

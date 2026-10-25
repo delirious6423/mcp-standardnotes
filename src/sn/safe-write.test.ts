@@ -697,6 +697,37 @@ describe("batch writes", () => {
     expect(writes).toHaveLength(0);
   });
 
+  it("pushes creates first and trashes last, so a failed later chunk never leaves merge sources trashed alone", async () => {
+    await put(tagUuid, "Tag", { title: "Tag", references: [{ uuid: noteUuid, content_type: "Note" }] });
+    client = await createClientFromSession(config);
+    // Earlier changes to the tag and a source put their plans (tag gains the merged note; source is
+    // trashed) ahead of the merged note in batch order.
+    const changes = [
+      { kind: "tag_update" as const, uuid: tagUuid, revision: await revision(tagUuid), title: "Renamed" },
+      { kind: "note_flags" as const, uuid: noteUuid, revision: await revision(), pinned: true },
+      ...Array.from({ length: 49 }, (_, i) => ({ kind: "note_create" as const, title: `N${i}`, text: "x" })),
+      { kind: "note_merge" as const, title: "Merged", sources: [{ uuid: noteUuid, revision: await revision() }, { uuid: note2, revision: await revision(note2) }] },
+    ];
+    const { plans } = await client.prepareChanges(changes);
+    const merged = plans.find((p) => p.change.kind === "note_merge")!.after.uuid;
+    const base = mocks.sync.getMockImplementation()!;
+    let pushes = 0;
+    mocks.sync.mockImplementation(async (cfg: unknown, params: { items?: RawItem[] }) => {
+      if (params.items?.length && ++pushes === 2) throw new Error("connection dropped before the second chunk");
+      return base(cfg, params);
+    });
+    const outcome = await client.commitChanges(plans);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.some((item) => item.uuid === merged)).toBe(true);
+    expect(outcome.confirmed).toContain(merged);
+    for (const uuid of [noteUuid, note2]) {
+      expect(outcome.unconfirmed).toContain(uuid);
+      expect((await decryptItemContent(server.get(uuid)!, keys)).trashed).toBeUndefined();
+    }
+    // The tag never points at a note that was not created.
+    expect(writes[0]!.some((item) => item.uuid === tagUuid)).toBe(false);
+  });
+
   it("merges notes into one from their current text, keeps their tags, trashes them, and undoes in one step", async () => {
     await put(tagUuid, "Tag", { title: "Tag", references: [{ uuid: note2, content_type: "Note" }] });
     client = await createClientFromSession(config);
@@ -713,6 +744,8 @@ describe("batch writes", () => {
     expect((await decryptItemContent(server.get(tagUuid)!, keys)).references).toEqual([{ uuid: note2, content_type: "Note" }, { uuid: merged, content_type: "Note" }]);
     const undo = await client.prepareRecoveries(plans);
     await client.commitChanges(undo.plans);
+    // Sources are restored before the merged note is trashed.
+    expect(writes.at(-1)!.map((item) => item.uuid).at(-1)).toBe(merged);
     expect(await decryptItemContent(server.get(merged)!, keys)).toMatchObject({ trashed: true });
     for (const s of sources) expect((await decryptItemContent(server.get(s.uuid)!, keys)).trashed).toBeUndefined();
     expect((await decryptItemContent(server.get(tagUuid)!, keys)).references).toEqual([{ uuid: note2, content_type: "Note" }]);
