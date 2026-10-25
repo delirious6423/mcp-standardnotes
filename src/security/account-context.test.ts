@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
@@ -108,8 +108,33 @@ describe("per-process client", { timeout: 120_000 }, () => {
     await withClient(async () => undefined);
     const account = path.join(dir, (await readdir(dir))[0]!);
     for (const body of ["not json", JSON.stringify({ until: Date.now() + 30 * 86400_000 })]) {
-      await writeFile(path.join(account, "rate-limited-until.json"), body);
+      await writeFile(path.join(account, "rate-limited-until.json"), body, { mode: 0o600 });
       await expect(withClient(async () => "ok")).resolves.toBe("ok");
     }
+  });
+
+  // Windows symlinks need elevation; its private-file checks are covered by the Windows VM gate.
+  it.skipIf(process.platform === "win32")("writes the marker as a new private file and never follows a planted symlink", async () => {
+    mocks.load.mockResolvedValue(session("a", "r"));
+    mocks.create.mockResolvedValue(fakeClient());
+    await withClient(async () => undefined);
+    const account = path.join(dir, (await readdir(dir))[0]!);
+    const marker = path.join(account, "rate-limited-until.json");
+    const victim = path.join(path.dirname(dir), "victim.json");
+    // A symlinked marker is not read: its target's valid-looking wait does not block calls.
+    await writeFile(victim, JSON.stringify({ until: Date.now() + 60_000 }), { mode: 0o600 });
+    await symlink(victim, marker);
+    await expect(withClient(async () => "ok")).resolves.toBe("ok");
+    const before = await readFile(victim, "utf8");
+    // Planted after the call's own marker check removed the ignored one: the write must still not follow it.
+    await expect(withClient(async () => {
+      await symlink(victim, marker);
+      throw new SnApiError("Rate limited", "rate-limited", 429, { retryAfter: "60" });
+    })).rejects.toThrow();
+    expect(await readFile(victim, "utf8")).toBe(before);
+    const stat = await lstat(marker);
+    expect(stat.isFile() && !stat.isSymbolicLink()).toBe(true);
+    expect(stat.mode & 0o777).toBe(0o600);
+    await expect(withClient(async () => "ok")).rejects.toThrow(/No request was sent/);
   });
 });

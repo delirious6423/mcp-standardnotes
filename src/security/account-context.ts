@@ -1,9 +1,10 @@
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { createClientFromSession, type SnClient } from "../sn/client.js";
 import { failedRequestCount, SnApiError, takeRateLimit } from "../sn/http.js";
 import { loadSession, recoveryKey, resolveEmail } from "../sn/session.js";
-import { accountDirectory, privateDirectory, withAccountLock } from "./account-state.js";
+import { accountDirectory, atomicPrivateWrite, privateDirectory, withAccountLock } from "./account-state.js";
+import { openPrivateFile } from "./private-fs.js";
 import { WriteJournal } from "./write-journal.js";
 import { serverUrl as configuredServerUrl } from "../sn/server-url.js";
 
@@ -33,7 +34,10 @@ const DEFAULT_WAIT_MS = 600_000;
 
 async function rateLimitedUntil(dir: string): Promise<number> {
   try {
-    const until = Number((JSON.parse(await readFile(path.join(dir, RATE_LIMIT_FILE), "utf8")) as { until?: unknown }).until);
+    // Only a private regular file counts; a symlink or another user's file is ignored, then replaced.
+    const fh = await openPrivateFile(path.join(dir, RATE_LIMIT_FILE));
+    const text = await fh.readFile("utf8").finally(() => fh.close());
+    const until = Number((JSON.parse(text) as { until?: unknown }).until);
     // A malformed or implausibly distant marker is ignored rather than locking the account out.
     return Number.isFinite(until) && until - Date.now() <= MAX_WAIT_MS ? until : 0;
   } catch {
@@ -44,7 +48,7 @@ async function rateLimitedUntil(dir: string): Promise<number> {
 async function recordRateLimit(dir: string, error: SnApiError): Promise<void> {
   const seconds = Number((error.payload as { retryAfter?: unknown } | undefined)?.retryAfter);
   const wait = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, MAX_WAIT_MS) : DEFAULT_WAIT_MS;
-  await writeFile(path.join(dir, RATE_LIMIT_FILE), JSON.stringify({ until: Date.now() + wait }), { mode: 0o600 });
+  await atomicPrivateWrite(path.join(dir, RATE_LIMIT_FILE), JSON.stringify({ until: Date.now() + wait }));
 }
 
 function rateLimitIn(error: unknown): SnApiError | undefined {
