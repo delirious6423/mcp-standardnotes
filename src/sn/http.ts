@@ -182,6 +182,8 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
   const finalInit = {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(30_000),
+    // A 307/308 would resend login and refresh bodies (password-derived key, tokens) to another host.
+    redirect: "error" as const,
     headers,
     dispatcher: getDispatcher(),
   };

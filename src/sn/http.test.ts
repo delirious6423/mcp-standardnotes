@@ -46,6 +46,12 @@ describe("snFetch (via getLoginParams)", () => {
   // spoofing we did between v0.3.2 and v0.5.0 is now flagged as impersonation
   // (HTTP 403, cf-mitigated: challenge) because CF cross-checks UA vs TLS
   // fingerprint. Reproduced from a residential IP on 2026-08-04.
+  it("refuses to follow redirects", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(validLoginParams));
+    await getLoginParams({ serverUrl: "https://example.test" }, "a@b.co", "challenge");
+    expect(fetchMock.mock.calls[0]?.[1].redirect).toBe("error");
+  });
+
   it("sends an honest project User-Agent (no browser spoofing)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(validLoginParams));
 
