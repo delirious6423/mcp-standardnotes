@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SnClient } from "../sn/client.js";
-import type { Note, NoteSummary } from "../sn/types.js";
+import type { NoteSummary } from "../sn/types.js";
 import { registerNoteHandlers } from "./notes.js";
 
 function summary(over: Partial<NoteSummary> = {}): NoteSummary {
@@ -17,36 +17,11 @@ function summary(over: Partial<NoteSummary> = {}): NoteSummary {
   };
 }
 
-function fullNote(over: Partial<Note> = {}): Note {
-  return {
-    uuid: "11111111-1111-4111-8111-111111111111",
-    title: "t",
-    text: "body",
-    createdAt: "2026-04-14T00:00:00Z",
-    updatedAt: "2026-04-15T00:00:00Z",
-    trashed: false,
-    protected: false,
-    locked: false,
-    tags: [],
-    noteType: "plain-text",
-    ...over,
-  };
-}
-
 function fakeClient(): SnClient {
-  return {
+  return ({
     listNotes: vi.fn(async () => []),
     searchNotes: vi.fn(async () => []),
     getNote: vi.fn(async () => null),
-    createNote: vi.fn(async () => "11111111-1111-4111-8111-111111111111"),
-    createNotesBatch: vi.fn(async () => [
-      {
-        uuid: "11111111-1111-4111-8111-111111111111",
-        title: "t",
-      },
-    ]),
-    updateNote: vi.fn(async () => undefined),
-    deleteNote: vi.fn(async () => undefined),
     stats: vi.fn(async () => ({
       notes: { total: 0, active: 0, trashed: 0 },
       tags: 0,
@@ -59,17 +34,12 @@ function fakeClient(): SnClient {
     })),
     listTags: vi.fn(async () => []),
     getTag: vi.fn(async () => null),
-    createTag: vi.fn(async () => "22222222-2222-4222-8222-222222222222"),
-    updateTag: vi.fn(async () => undefined),
-    deleteTag: vi.fn(async () => undefined),
-    attachTag: vi.fn(async () => undefined),
-    detachTag: vi.fn(async () => undefined),
     sync: vi.fn(async () => ({
       notes: 0,
       tags: 0,
       syncedAt: "2026-04-15T00:00:00Z",
     })),
-  };
+  }) as unknown as SnClient;
 }
 
 describe("tool input validation", () => {
@@ -110,54 +80,6 @@ describe("tool input validation", () => {
     ).rejects.toThrow();
   });
 
-  it("notes_get rejects non-uuid", async () => {
-    const h = registerNoteHandlers(fakeClient());
-    await expect(h.notes_get({ uuid: "nope" })).rejects.toThrow();
-  });
-
-  it("notes_update requires at least one field", async () => {
-    const h = registerNoteHandlers(fakeClient());
-    await expect(
-      h.notes_update({ uuid: "11111111-1111-4111-8111-111111111111" }),
-    ).rejects.toThrow();
-  });
-
-  it("notes_delete defaults permanent=false", async () => {
-    const c = fakeClient();
-    const h = registerNoteHandlers(c);
-    await h.notes_delete({ uuid: "11111111-1111-4111-8111-111111111111" });
-    expect(c.deleteNote).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      false,
-    );
-  });
-
-  it("notes_create syncs after create", async () => {
-    const c = fakeClient();
-    const h = registerNoteHandlers(c);
-    await h.notes_create({ title: "t", text: "body" });
-    expect(c.sync).toHaveBeenCalled();
-  });
-
-  it("notes_create forwards tags", async () => {
-    const c = fakeClient();
-    const h = registerNoteHandlers(c);
-    const tagUuid = "22222222-2222-4222-8222-222222222222";
-    await h.notes_create({ title: "t", text: "body", tags: [tagUuid] });
-    expect(c.createNote).toHaveBeenCalledWith({
-      title: "t",
-      text: "body",
-      tags: [tagUuid],
-    });
-  });
-
-  it("notes_create rejects malformed tag uuid", async () => {
-    const h = registerNoteHandlers(fakeClient());
-    await expect(
-      h.notes_create({ title: "t", text: "body", tags: ["nope"] }),
-    ).rejects.toThrow();
-  });
-
   it("notes_list forwards tag filter", async () => {
     const c = fakeClient();
     const h = registerNoteHandlers(c);
@@ -165,31 +87,6 @@ describe("tool input validation", () => {
     expect(c.listNotes).toHaveBeenCalledWith(
       expect.objectContaining({ tag: "Recettes" }),
     );
-  });
-
-  it("notes_create_many rejects empty array", async () => {
-    const h = registerNoteHandlers(fakeClient());
-    await expect(h.notes_create_many({ notes: [] })).rejects.toThrow();
-  });
-
-  it("notes_create_many forwards inputs", async () => {
-    const c = fakeClient();
-    const h = registerNoteHandlers(c);
-    const res = await h.notes_create_many({
-      notes: [
-        { title: "a", text: "A" },
-        { title: "b", text: "B" },
-      ],
-    });
-    expect(c.createNotesBatch).toHaveBeenCalled();
-    expect(res).toEqual({
-      created: [
-        {
-          uuid: "11111111-1111-4111-8111-111111111111",
-          title: "t",
-        },
-      ],
-    });
   });
 
   it("notes_stats calls client.stats", async () => {
@@ -200,21 +97,12 @@ describe("tool input validation", () => {
     expect(res).toMatchObject({ notes: { total: 0 } });
   });
 
-  it("notes_update accepts tags-only change", async () => {
-    const c = fakeClient();
-    const h = registerNoteHandlers(c);
-    await h.notes_update({
-      uuid: "11111111-1111-4111-8111-111111111111",
-      tags: [],
-    });
-    expect(c.updateNote).toHaveBeenCalled();
-  });
 });
 
 // The user-facing protection policy. The protocol layer reports flags
 // faithfully — these tests pin the *behavior* the tool layer must enforce:
-// protected = info-disclosure protection (block reads + writes, mask in
-// listings), locked = edit-lock only (reads pass through, writes refused).
+// protected = info-disclosure protection (masked in listings; notes_get and
+// writes refuse it, see server.test.ts and safe-write.test.ts), locked = edit-lock only.
 describe("protected/locked enforcement", () => {
   const uuid = "11111111-1111-4111-8111-111111111111";
 
@@ -254,67 +142,4 @@ describe("protected/locked enforcement", () => {
     expect(result[0]).toMatchObject({ title: "[Protected]", preview: "" });
   });
 
-  it("notes_get refuses to surface the body of a protected note", async () => {
-    const c = fakeClient();
-    (c.getNote as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      fullNote({ protected: true }),
-    );
-    const h = registerNoteHandlers(c);
-    await expect(h.notes_get({ uuid })).rejects.toThrow(/protected/i);
-  });
-
-  it("notes_get returns the body of a locked note (locked = read-only, not hidden)", async () => {
-    const c = fakeClient();
-    (c.getNote as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      fullNote({ locked: true, text: "recipe body" }),
-    );
-    const h = registerNoteHandlers(c);
-    const result = await h.notes_get({ uuid }) as Note;
-    expect(result.text).toBe("recipe body");
-    expect(result.locked).toBe(true);
-  });
-
-  it("notes_update refuses to write a protected note (without calling updateNote)", async () => {
-    const c = fakeClient();
-    (c.getNote as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      fullNote({ protected: true }),
-    );
-    const h = registerNoteHandlers(c);
-    await expect(
-      h.notes_update({ uuid, text: "tampered" }),
-    ).rejects.toThrow(/protected/i);
-    expect(c.updateNote).not.toHaveBeenCalled();
-  });
-
-  it("notes_update refuses to write a locked note (without calling updateNote)", async () => {
-    const c = fakeClient();
-    (c.getNote as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      fullNote({ locked: true }),
-    );
-    const h = registerNoteHandlers(c);
-    await expect(
-      h.notes_update({ uuid, text: "tampered" }),
-    ).rejects.toThrow(/edit-locked/i);
-    expect(c.updateNote).not.toHaveBeenCalled();
-  });
-
-  it("notes_delete refuses to delete a protected note (without calling deleteNote)", async () => {
-    const c = fakeClient();
-    (c.getNote as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      fullNote({ protected: true }),
-    );
-    const h = registerNoteHandlers(c);
-    await expect(h.notes_delete({ uuid })).rejects.toThrow(/protected/i);
-    expect(c.deleteNote).not.toHaveBeenCalled();
-  });
-
-  it("notes_delete refuses to delete a locked note (without calling deleteNote)", async () => {
-    const c = fakeClient();
-    (c.getNote as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      fullNote({ locked: true }),
-    );
-    const h = registerNoteHandlers(c);
-    await expect(h.notes_delete({ uuid })).rejects.toThrow(/edit-locked/i);
-    expect(c.deleteNote).not.toHaveBeenCalled();
-  });
 });

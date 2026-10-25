@@ -309,8 +309,10 @@ describe("bounded safe writes", () => {
       await client.commitChange(plan);
       expect(await decryptItemContent(server.get(noteUuid)!, keys)).toMatchObject({ text, future: { keep: true }, trashed: kind === "note_trash" });
     }
-    await expect(client.deleteNote(noteUuid, true)).rejects.toThrow(/disabled/);
-    await expect(client.deleteTag(tagUuid)).rejects.toThrow(/disabled/);
+    // No direct-write path exists; every write goes through prepare, approval and commit.
+    for (const name of ["deleteNote", "deleteTag", "createNote", "updateNote", "createTag", "updateTag", "attachTag", "detachTag"]) {
+      expect(name in client).toBe(false);
+    }
     expect(writes).toHaveLength(2);
   });
 

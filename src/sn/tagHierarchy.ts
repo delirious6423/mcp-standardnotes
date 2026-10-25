@@ -12,10 +12,6 @@ export function parentUuidOf(t: DecryptedTag): string | null {
   return t.references.find((r) => r.reference_type === "TagToParentTag")?.uuid ?? null;
 }
 
-export function stripParentRefs(refs: TagReference[]): TagReference[] {
-  return refs.filter((r) => r.reference_type !== "TagToParentTag");
-}
-
 export function makeParentRef(parentUuid: string): TagReference {
   return { uuid: parentUuid, content_type: "Tag", reference_type: "TagToParentTag" };
 }
@@ -56,29 +52,3 @@ export function subtreeTagUuids(
   return result;
 }
 
-/**
- * Would re-parenting `childUuid` under `newParentUuid` create a cycle?
- *
- * Walks up the ancestor chain from `newParentUuid`. If the walk ever visits
- * `childUuid`, the child is currently an ancestor of the proposed parent —
- * setting the link would close the loop. A pre-existing cycle in the vault
- * (data-corruption case) is detected and treated as "not our cycle" so a
- * legitimate re-parent can still repair a broken tree.
- */
-export function wouldCreateCycle(
-  tags: Map<string, DecryptedTag>,
-  childUuid: string,
-  newParentUuid: string,
-): boolean {
-  if (childUuid === newParentUuid) return true;
-  let cursor: string | null = newParentUuid;
-  const seen = new Set<string>();
-  while (cursor) {
-    if (seen.has(cursor)) return false;
-    seen.add(cursor);
-    if (cursor === childUuid) return true;
-    const t = tags.get(cursor);
-    cursor = t ? parentUuidOf(t) : null;
-  }
-  return false;
-}

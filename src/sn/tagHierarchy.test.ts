@@ -3,9 +3,7 @@ import type { DecryptedTag } from "./protocol004.js";
 import {
   makeParentRef,
   parentUuidOf,
-  stripParentRefs,
   subtreeTagUuids,
-  wouldCreateCycle,
 } from "./tagHierarchy.js";
 
 function tag(over: Partial<DecryptedTag> & { uuid: string }): DecryptedTag {
@@ -81,27 +79,6 @@ describe("parentUuidOf", () => {
   });
 });
 
-describe("stripParentRefs", () => {
-  it("removes only TagToParentTag references and preserves everything else", () => {
-    const refs = [
-      { uuid: "note-1", content_type: "Note" },
-      { uuid: B, content_type: "SN|Tag", reference_type: "TagToParentTag" },
-      { uuid: C, content_type: "SN|Tag" },
-    ];
-    expect(stripParentRefs(refs)).toEqual([
-      { uuid: "note-1", content_type: "Note" },
-      { uuid: C, content_type: "SN|Tag" },
-    ]);
-  });
-
-  it("keeps a SN|Tag reference with a non-parent reference_type", () => {
-    const refs = [
-      { uuid: B, content_type: "SN|Tag", reference_type: "TagToFile" },
-    ];
-    expect(stripParentRefs(refs)).toEqual(refs);
-  });
-});
-
 describe("makeParentRef", () => {
   it("emits the shape SN clients expect on the wire", () => {
     // TagMutator.makeChildOf in standardnotes/app; ContentType.TYPES.Tag is "Tag".
@@ -163,89 +140,5 @@ describe("subtreeTagUuids", () => {
     expect(out.has(A)).toBe(true);
     expect(out.has(B)).toBe(true);
     expect(out.size).toBe(2);
-  });
-});
-
-describe("wouldCreateCycle", () => {
-  // Tree: A → B → C (C is B's parent, B is A's parent)
-  const tree = new Map<string, DecryptedTag>([
-    [
-      A,
-      tag({
-        uuid: A,
-        references: [
-          { uuid: B, content_type: "SN|Tag", reference_type: "TagToParentTag" },
-        ],
-      }),
-    ],
-    [
-      B,
-      tag({
-        uuid: B,
-        references: [
-          { uuid: C, content_type: "SN|Tag", reference_type: "TagToParentTag" },
-        ],
-      }),
-    ],
-    [C, tag({ uuid: C })],
-  ]);
-
-  it("refuses making a tag its own parent", () => {
-    expect(wouldCreateCycle(tree, A, A)).toBe(true);
-  });
-
-  it("refuses re-parenting under a direct descendant", () => {
-    // C wants B as parent, but B is a descendant of C in this tree.
-    expect(wouldCreateCycle(tree, C, B)).toBe(true);
-  });
-
-  it("refuses re-parenting under a transitive descendant", () => {
-    // C wants A as parent, but A is a grandchild of C.
-    expect(wouldCreateCycle(tree, C, A)).toBe(true);
-  });
-
-  it("allows re-parenting under an unrelated tag", () => {
-    // A wants C as parent — already the case indirectly, but no cycle.
-    expect(wouldCreateCycle(tree, A, C)).toBe(false);
-  });
-
-  it("allows attaching under a brand-new top-level tag", () => {
-    expect(wouldCreateCycle(tree, C, "unknown-uuid")).toBe(false);
-  });
-
-  it("does not infinite-loop on a pre-existing cycle in the vault", () => {
-    // A → B → A (data corruption). Re-parenting elsewhere must still be
-    // decidable so a user can repair the tree.
-    const corrupt = new Map<string, DecryptedTag>([
-      [
-        A,
-        tag({
-          uuid: A,
-          references: [
-            {
-              uuid: B,
-              content_type: "SN|Tag",
-              reference_type: "TagToParentTag",
-            },
-          ],
-        }),
-      ],
-      [
-        B,
-        tag({
-          uuid: B,
-          references: [
-            {
-              uuid: A,
-              content_type: "SN|Tag",
-              reference_type: "TagToParentTag",
-            },
-          ],
-        }),
-      ],
-    ]);
-    // C is fresh — not involved in the corrupted loop, so no NEW cycle would
-    // be created by making it a child of A.
-    expect(wouldCreateCycle(corrupt, C, A)).toBe(false);
   });
 });
