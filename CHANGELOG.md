@@ -20,9 +20,12 @@ Fixes from an independent code review (two reviewers, all findings verified agai
 - Keychain sessions are stored per server and email; the same email on two servers no longer shares or
   deletes one session. Older email-only entries are read for their own server and migrated on next save.
 - Undo of an edited legacy 003 note restores its exact content as 004 instead of failing at commit.
-- The launcher no longer sources the dotfiles machine file as shell code (it is still read as data).
-- Server error messages are redacted before they are cut, and bounded, before reaching tool errors.
-- A local tool error (bad UUID, stale revision) keeps the synced client; only a failed request drops it.
+- The launcher no longer sources the dotfiles machine file as shell code. It is read as data (`[export ]DATA_DIR=`,
+  quoted or bare, optional comment); forms that need a shell are refused instead of choosing another directory.
+- Server error messages are redacted before they are cut, and bounded, before reaching tool errors; a 429's
+  `Retry-After` is used only as seconds or an HTTP date.
+- A local tool error (bad UUID, stale revision) keeps the synced client; it is rebuilt only when its own state
+  may be incomplete (a failed sync, or a push not followed by a sync).
 - Batch pushes send creates first and trashes last, so a failed later chunk never leaves merge sources
   trashed without their merged note.
 - The rate-limit marker is written and read as a private file and never through a symlink.
