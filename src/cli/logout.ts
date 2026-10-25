@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   const base = await configureStateDirectory();
   const dir = accountDirectory(base, server, email);
   await privateDirectory(base);
-  const removed = await withAccountLock(dir, () => deleteSession(email));
+  const removed = await withAccountLock(dir, () => deleteSession(server, email));
   if (!removed) throw new Error("No login session found in the keychain");
   process.stdout.write("Login session removed. Encrypted recovery history and its separate key were preserved.\n");
 }

@@ -164,6 +164,8 @@ export interface SnClient {
 export interface SnClientConfig {
   serverUrl: string;
   email: string;
+  /** A session the caller already loaded and checked; avoids a second keychain read that could differ. */
+  session?: StoredSession;
 }
 
 interface ClientState {
@@ -274,7 +276,7 @@ export async function createClientFromLogin(
     decryptFailedTags: new Set(),
   };
 
-  await saveSession(config.email, {
+  await saveSession({
     serverUrl: config.serverUrl,
     email: config.email,
     sessionPayload: {
@@ -293,7 +295,10 @@ export async function createClientFromLogin(
 export async function createClientFromSession(
   config: SnClientConfig,
 ): Promise<SnClient> {
-  const stored = await loadSession(config.email);
+  const stored = config.session ?? await loadSession(config.serverUrl, config.email);
+  if (stored && (stored.serverUrl !== config.serverUrl || stored.email !== config.email)) {
+    throw new Error("Keychain session does not match this account/server; sign in with `standardnotes-mcp login` in your terminal");
+  }
   if (!stored) {
     throw new Error(
       "No session found. Run `standardnotes-mcp login` to authenticate first.",
@@ -337,7 +342,7 @@ export async function createClientFromSession(
 }
 
 async function persistSession(state: ClientState): Promise<void> {
-  await saveSession(state.email, {
+  await saveSession({
     serverUrl: state.serverUrl,
     email: state.email,
     sessionPayload: {

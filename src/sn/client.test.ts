@@ -42,6 +42,18 @@ describe("createClientFromSession bootstrap", () => {
     loginMock.mockReset();
   });
 
+  it("uses a session the caller already checked, without reading the keychain again, and refuses a mismatched one", async () => {
+    const checked = { serverUrl: "https://example.test", email: "a@b.co", sessionPayload: { access_token: "tok", refresh_token: "ref" },
+      masterKeyHex: "00".repeat(32), keyParams: { version: "004", identifier: "a@b.co", pw_nonce: "n" }, savedAt: "" };
+    syncMock.mockRejectedValue(new Error("stop after the first sync"));
+    await expect(createClientFromSession({ serverUrl: "https://example.test", email: "a@b.co", session: checked })).rejects.toThrow(/stop/);
+    expect(loadSessionMock).not.toHaveBeenCalled();
+    expect(syncMock.mock.calls[0]?.[0]).toMatchObject({ serverUrl: "https://example.test", authToken: "tok" });
+    syncMock.mockClear();
+    await expect(createClientFromSession({ serverUrl: "https://other.test", email: "a@b.co", session: checked })).rejects.toThrow(/does not match/);
+    expect(syncMock).not.toHaveBeenCalled();
+  });
+
   it("ignores the stored syncToken so the cold-boot sync is full (fetches items_keys)", async () => {
     loadSessionMock.mockResolvedValue({
       serverUrl: "https://example.test",

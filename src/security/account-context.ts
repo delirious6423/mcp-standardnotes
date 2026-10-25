@@ -65,7 +65,7 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
         throw new Error(`Rate limited by Standard Notes until ${new Date(until).toISOString()} (about ${Math.ceil((until - Date.now()) / 60_000)} min). No request was sent. Wait; do not retry in a loop.`);
       }
       await rm(path.join(dir, RATE_LIMIT_FILE), { force: true });
-      const stored = await loadSession(email);
+      const stored = await loadSession(serverUrl, email);
       if (!stored || stored.serverUrl !== serverUrl || stored.email !== email) {
         throw new Error("Keychain session does not match this account/server; sign in with `standardnotes-mcp login` in your terminal");
       }
@@ -77,7 +77,7 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
         if (used.access !== access || used.refresh !== refresh) cached.client.adoptTokens(access, refresh);
         return cached.client;
       }
-      const fresh = await createClientFromSession({ serverUrl, email });
+      const fresh = await createClientFromSession({ serverUrl, email, session: stored });
       cached = { key, masterKeyHex: stored.masterKeyHex, client: fresh };
       return fresh;
     };

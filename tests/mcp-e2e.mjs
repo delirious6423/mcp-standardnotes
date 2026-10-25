@@ -240,6 +240,8 @@ try {
   await call(a,'notes_list',{});
   await call(b,'notes_list',{});
   check(refreshed===1,'two clients share refreshed session safely');
+  const entries=(await keytar.findCredentials(service)).map(c=>c.account);
+  check(entries.length===1 && entries[0]===`${email} (${endpoint})`,'the email-only session moved to its server-scoped keychain entry on rotation');
   // One client per process: further reads are delta syncs, not full downloads.
   const scratch=fromScratch;
   for(let i=0;i<3;i++) await call(a,'notes_get',{uuid:noteId});
@@ -276,7 +278,7 @@ try {
   for(const c of clients) await c.close();
   for(const t of transports) await t.close();
   await new Promise(r=>api.close(r));
-  await keytar.deletePassword(service,email);
+  for(const item of await keytar.findCredentials(service)) await keytar.deletePassword(service,item.account);
   for(const item of await keytar.findCredentials(`${service}-recovery`)) await keytar.deletePassword(`${service}-recovery`,item.account);
   await rm(parent,{recursive:true,force:true});
   process.stdout.write('CLEANUP PASS: fixture MCP clients closed; mock API, keychain entries and journal files removed. Descendant cleanup requires separate PID assertions or owned VM discard.\n');

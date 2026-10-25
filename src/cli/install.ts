@@ -77,12 +77,14 @@ async function backupOnce(path: string): Promise<string | null> {
 
 async function pickEmail(): Promise<string> {
   if (process.env.SN_EMAIL) return process.env.SN_EMAIL;
-  const creds = await keytar.findCredentials(KEYCHAIN_SERVICE);
-  if (creds.length === 1 && creds[0]) return creds[0].account;
-  if (creds.length === 0) {
-    throw new Error(
-      "No stored Standard Notes session found. Run `mcp-standardnotes-login` first.",
-    );
+  // Entry names differ by format (email, or "email (server)"); the stored session names the account.
+  const emails = [...new Set((await keytar.findCredentials(KEYCHAIN_SERVICE)).flatMap(({ password }) => {
+    try { const email = (JSON.parse(password) as { email?: unknown }).email; return typeof email === "string" ? [email] : []; }
+    catch { return []; }
+  }))];
+  if (emails.length === 1) return emails[0]!;
+  if (emails.length === 0) {
+    throw new Error("No stored Standard Notes session found. Run `standardnotes-mcp login` first.");
   }
   // Multiple accounts — prompt
   const rl = readline.createInterface({
@@ -91,17 +93,16 @@ async function pickEmail(): Promise<string> {
     terminal: true,
   });
   process.stdout.write("Multiple sessions found. Pick which email to use:\n");
-  creds.forEach((c, i) => process.stdout.write(`  [${i + 1}] ${c.account}\n`));
+  emails.forEach((email, i) => process.stdout.write(`  [${i + 1}] ${email}\n`));
   const answer = await new Promise<string>((res) =>
     rl.question("Number: ", (a) => {
       rl.close();
       res(a.trim());
     }),
   );
-  const idx = Number(answer) - 1;
-  const choice = creds[idx];
+  const choice = emails[Number(answer) - 1];
   if (!choice) throw new Error(`Invalid selection: ${answer}`);
-  return choice.account;
+  return choice;
 }
 
 export function buildEntry(
