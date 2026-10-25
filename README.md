@@ -65,7 +65,7 @@ Moves that would make a tag its own ancestor are refused.
    ```text
    $ standardnotes-mcp approve 3f0c2a9e-6b1d-4c8e-9a51-7d2f0b4e8c13
    Operation 3f0c2a9e-6b1d-4c8e-9a51-7d2f0b4e8c13 (prepared), expires 2026-10-25T05:12:00.000Z
-   Characters shown as ⟦U+XXXX⟧ are invisible or control characters in the note content.
+   Characters shown as ⟦U+XXXX⟧ are invisible or control characters in the note content; a ⟦ typed in a note shows as ⟦U+27E6⟧.
 
    Batch of 3 item(s): {"tag_attach":2,"note_trash":1,"note_update":1}
 
@@ -91,9 +91,11 @@ Moves that would make a tag its own ancestor are refused.
    ```
 
    Every changed field is shown in full. Invisible and control characters in note text are shown as
-   markers, so a note cannot disguise what it changes. `--json` prints the raw stored preview.
-4. The agent calls `writes_commit`. If any item changed since it was read, nothing is sent. The result is
-   read back from the server before it is reported as saved.
+   markers, and so is the marker's own bracket, so a note can neither hide a change nor fake a marker.
+   `--json` prints the raw stored preview.
+4. The agent calls `writes_commit`. If any item changed since it was read, or the commit fails before
+   sending, nothing is sent and the approval stays usable until it expires. The result is read back from
+   the server before it is reported as saved.
 5. If something went wrong mid-way, `writes_status` says which items landed; retrying the same operation
    ID only reconciles and never sends twice. `writes_undo_prepare` stages an undo, which you approve the
    same way.

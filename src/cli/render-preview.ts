@@ -1,15 +1,19 @@
 // Terminal rendering of a stored preview for human approval. Note content is untrusted: every
-// control, bidi and zero-width character is shown as a visible marker so text cannot rewrite or
-// hide parts of what the user is approving. Nothing is truncated.
+// control, bidi and invisible character is shown as a visible marker so text cannot rewrite or
+// hide parts of what the user is approving. The marker's own opening bracket is escaped too, so
+// text cannot imitate a marker: every ⟦ on screen starts a real one. Nothing is truncated.
 
 type Obj = Record<string, unknown>;
 
-// Inclusive code point ranges: C0/C1 controls (except tab and newline), soft hyphen, fillers,
-// zero-width and bidi controls, line/paragraph separators, BOM, interlinear annotations, tag characters.
+// Inclusive code point ranges: C0/C1 controls (except tab and newline), line/paragraph separators,
+// interlinear annotations, every Unicode Default_Ignorable_Code_Point (soft hyphen, combining grapheme
+// joiner, fillers, Mongolian and other variation selectors, zero-width and bidi controls, BOM, tag
+// characters), and U+27E6, the marker's own opening bracket.
 const HIDDEN: Array<[number, number]> = [
-  [0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5],
-  [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x2069], [0x3164, 0x3164],
-  [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff9, 0xfffb], [0xe0000, 0xe007f],
+  [0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160],
+  [0x17b4, 0x17b5], [0x180b, 0x180f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x27e6, 0x27e6],
+  [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff0, 0xfffb],
+  [0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], [0xe0000, 0xe0fff],
 ];
 
 export function visible(text: string): string {
@@ -78,7 +82,7 @@ export function renderPreview(record: Obj): string {
   const body = preview.kind === "batch" ? batch(preview) : single(preview);
   return [
     `Operation ${visible(String(record.operationId))} (${visible(String(record.status))}), expires ${visible(String(record.expiresAt))}`,
-    "Characters shown as ⟦U+XXXX⟧ are invisible or control characters in the note content.",
+    "Characters shown as ⟦U+XXXX⟧ are invisible or control characters in the note content; a ⟦ typed in a note shows as ⟦U+27E6⟧.",
     "",
     ...body,
     "",
