@@ -21,7 +21,7 @@ every write previewed and approved by a human, reversible where Standard Notes a
 - [x] Bugs: launcher follows symlinks to its checkout; installer entry check compares real paths (upstream #24); `dump-note` (printed decrypted text, ignored protection) removed.
 - [x] Re-run macOS and Windows VM gates: macOS ARM64 and Windows x64 PASS 2026-10-25. Windows fixes: elevated-owner new files, one PowerShell helper per process (per-check median 901.6 ms → 1.0 ms).
 - [ ] Windows ARM64 and Linux ARM64 gates.
-- [ ] Drop the dotfiles machine-file lookup from the launcher and `src/config.ts` (maintainer-specific); configure `SN_STATE_DIR` explicitly.
+- [x] The launcher no longer sources the dotfiles machine file as shell code; `src/config.ts` still reads `DATA_DIR` from it as data, so the terminal `approve` and the MCP server find the same state without extra configuration.
 
 ## Boundaries
 Standard Notes sync and stored recovery payloads stay end-to-end encrypted. The MCP server uses stdio pipes, never a listening port. Cloud models see the plaintext the agent reads. Protected notes stay excluded. Tests use synthetic data in throwaway VMs (`tests/vm/run.sh`); no real-account writes or package installs on the desktop as tests.

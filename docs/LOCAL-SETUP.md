@@ -18,7 +18,7 @@ Requires Node ≥ 22.12, a working OS keychain (Linux Secret Service, macOS Keyc
 
 The launcher is `bin/standardnotes-mcp` in your checkout; it follows symlinks, so you can link it into a directory on your `PATH`. Integration tests run in throwaway VMs (`tests/vm/run.sh`, `macos-run.sh`, `windows-run.sh`); do not run them on your desktop.
 
-State: set `SN_STATE_DIR` to a private absolute path, or `DATA_DIR` (`DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`); otherwise the OS state directory is used. If neither is set and `~/code/dotfiles/machines/<hostname>.env` exists, `DATA_DIR` is read from it (the maintainer's machine convention). No password belongs in MCP JSON.
+State: set `SN_STATE_DIR` to a private absolute path, or `DATA_DIR` (`DATA_DIR=/mnt/data` gives `/mnt/data/standardnotes-mcp`); otherwise the OS state directory is used. If neither is set and `~/code/dotfiles/machines/<hostname>.env` exists, `DATA_DIR` is read from it as data, never run as shell code (the maintainer's machine convention). The terminal `approve` and the MCP server must resolve the same directory; set `SN_STATE_DIR` in both if you use neither convention. No password belongs in MCP JSON.
 
 Sign in from your own interactive terminal:
 
