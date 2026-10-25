@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes from an independent code review (two reviewers, all findings verified against the code).
+
+### Fixed
+
+- A commit that fails before anything is sent keeps its approval usable until it expires, instead of
+  becoming `uncertain` and impossible to reject.
+- HTTP redirects are refused, so login and refresh bodies are never resent to another host.
+- A 429 during `writes_commit` now pauses every process for the account too.
+- The approval preview cannot be imitated by note text spelling a marker (`⟦` is escaped), and marks every
+  Unicode default-ignorable character.
+- Keychain sessions are stored per server and email; the same email on two servers no longer shares or
+  deletes one session. Older email-only entries are read for their own server and migrated on next save.
+- Undo of an edited legacy 003 note restores its exact content as 004 instead of failing at commit.
+- The launcher no longer sources the dotfiles machine file as shell code (it is still read as data).
+- Server error messages are redacted before they are cut, and bounded, before reaching tool errors.
+- A local tool error (bad UUID, stale revision) keeps the synced client; only a failed request drops it.
+- Batch pushes send creates first and trashes last, so a failed later chunk never leaves merge sources
+  trashed without their merged note.
+- The rate-limit marker is written and read as a private file and never through a symlink.
+- Docs: a self-signed server needs `NODE_EXTRA_CA_CERTS`; `SN_CERT_FINGERPRINT` alone does not make it valid.
+
+### Removed
+
+- Upstream's unreachable direct-write client methods and handlers (about 1200 lines).
+
 ## [0.7.0] — 2026-10-25 (fork: standardnotes-safe-mcp)
 
 First release line of this fork; not published to npm or the MCP Registry.
