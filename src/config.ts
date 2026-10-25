@@ -4,13 +4,14 @@ import path from "node:path";
 
 /**
  * DATA_DIR from a shell-style machine file, read as data: `[export ]DATA_DIR=value`, the value bare or
- * in single or double quotes, optionally followed by a `# comment`. Anything needing a shell (variables,
+ * in single or double quotes, optionally followed by whitespace and a `# comment`. Anything needing a shell (variables,
  * command substitution, escapes) is refused rather than silently choosing another state directory.
  */
 function machineDataDir(text: string, file: string): string | undefined {
   const line = text.split(/\r?\n/).reverse().find((l) => /^\s*(?:export\s+)?DATA_DIR=/.test(l));
   if (line === undefined) return undefined;
-  const value = /^\s*(?:export\s+)?DATA_DIR=(?:"([^"$`\\]*)"|'([^']*)'|([^\s"'$`\\#;|&<>()]*))\s*(?:#.*)?$/.exec(line);
+  // As in a shell, `#` starts a comment only after whitespace; `~` would need a shell to expand.
+  const value = /^\s*(?:export\s+)?DATA_DIR=(?:"([^"$`\\]*)"|'([^']*)'|([^\s"'$`\\;|&<>()~]*))(?:\s+#.*)?\s*$/.exec(line);
   const found = value?.[1] ?? value?.[2] ?? value?.[3];
   if (found === undefined) throw new Error(`Cannot read DATA_DIR from ${file} without a shell; set SN_STATE_DIR instead`);
   return found || undefined;

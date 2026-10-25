@@ -596,6 +596,7 @@ function buildClient(state: ClientState): SnClient {
     }
     // The push response's retrieved items are not stored, but its token is kept: only a sync repairs that.
     state.consistent = false;
+    state.lastSyncAt = 0;
     const res = await callSync(state, {
       syncToken: state.syncToken ?? undefined,
       items,

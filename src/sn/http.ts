@@ -242,7 +242,8 @@ function retryAfterSeconds(header: string | null): string | null {
   const value = header?.trim() ?? "";
   if (/^\d{1,9}$/.test(value)) return String(Number(value));
   const at = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value) ? Date.parse(value) : NaN;
-  return Number.isFinite(at) ? String(Math.max(0, Math.ceil((at - Date.now()) / 1000))) : null;
+  const seconds = Math.ceil((at - Date.now()) / 1000);
+  return Number.isFinite(seconds) && seconds > 0 ? String(seconds) : null;
 }
 
 /** Server-supplied text reaches tool errors: redact tokens before cutting, so no token prefix survives. */

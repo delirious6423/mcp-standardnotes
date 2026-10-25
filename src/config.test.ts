@@ -35,8 +35,13 @@ describe("state directory", () => {
         await writeFile(file, body);
         expect(await configureStateDirectory(), body).toBe(path.join("/data/drive", "standardnotes-mcp"));
       }
+      // A `#` inside a word is part of the path, as in a shell.
+      vi.stubEnv("SN_STATE_DIR", "");
+      await writeFile(file, "DATA_DIR=/data/vault#1 # comment\n");
+      expect(await configureStateDirectory()).toBe(path.join("/data/vault#1", "standardnotes-mcp"));
       // Anything needing a shell is refused, never run and never replaced by another directory.
-      for (const body of ["DATA_DIR=$(echo /tmp)\n", "DATA_DIR=$HOME/data\n", 'DATA_DIR="/a/$USER"\n', "DATA_DIR=/a b\n"]) {
+      for (const body of ["DATA_DIR=$(echo /tmp)\n", "DATA_DIR=$HOME/data\n", 'DATA_DIR="/a/$USER"\n', "DATA_DIR=/a b\n", "DATA_DIR=~/data\n",
+        'DATA_DIR="/data/drive"#x\n']) {
         vi.stubEnv("SN_STATE_DIR", "");
         await writeFile(file, body);
         await expect(configureStateDirectory(), body).rejects.toThrow(/without a shell/);

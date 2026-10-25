@@ -242,8 +242,10 @@ try {
   await call(a,'notes_get',{uuid:noteId});
   await call(b,'notes_get',{uuid:noteId});
   check(refreshed===refreshedBefore+1 && refreshed===1,'two clients share refreshed session safely');
-  const entries=(await keytar.findCredentials(service)).map(c=>c.account);
-  check(entries.length===1 && entries[0]===`${email} (${endpoint})`,'the email-only session moved to its server-scoped keychain entry on rotation');
+  // Count session entries only: Windows matches findCredentials by service prefix, so it can list other services too.
+  const keychainListed=await keytar.findCredentials(service);
+  const entries=keychainListed.filter(c=>{try{return JSON.parse(c.password).email===email;}catch{return false;}}).map(c=>c.account);
+  check(entries.length===1 && entries[0]===`${email} (${endpoint})`,`the email-only session moved to its server-scoped keychain entry on rotation (saw ${JSON.stringify(keychainListed.map(c=>c.account))})`);
   // One client per process: further reads are delta syncs, not full downloads.
   const scratch=fromScratch;
   for(let i=0;i<3;i++) await call(a,'notes_get',{uuid:noteId});

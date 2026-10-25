@@ -459,7 +459,9 @@ describe("client consistency after failures", () => {
     expect(client.inSync()).toBe(false);
     failure = undefined;
     mocks.sync.mockClear();
-    await client.getNoteWithRevision(noteUuid);
+    // listNotes goes through the 30 s TTL; it must still sync, from scratch.
+    await client.listNotes({ limit: 10, offset: 0, includeTrashed: true });
+    expect(params()).toHaveLength(1);
     expect(params()[0]!.syncToken).toBeUndefined();
     expect(client.inSync()).toBe(true);
   });
