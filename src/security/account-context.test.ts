@@ -34,7 +34,7 @@ afterEach(async () => { vi.unstubAllEnvs(); vi.useRealTimers(); await rm(path.di
 
 // Windows private-file checks launch PowerShell, about a second each.
 describe("per-process client", { timeout: 120_000 }, () => {
-  it("reuses one client, adopts rotated keychain tokens, and rebuilds after re-login or an error", async () => {
+  it("reuses one client, adopts rotated keychain tokens, and rebuilds after re-login or a failed request", async () => {
     const first = fakeClient(); first.setTokens("a1", "r1");
     const second = fakeClient();
     mocks.create.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValue(fakeClient());
@@ -48,7 +48,19 @@ describe("per-process client", { timeout: 120_000 }, () => {
     expect(mocks.create).toHaveBeenCalledTimes(1);
     mocks.load.mockResolvedValue(session("a2", "r2", "m".repeat(64)));
     expect(await withClient(async (c) => c)).toBe(second);
-    await expect(withClient(async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    // A local error (bad UUID, stale revision) keeps the synced client; no full re-sync follows.
+    await expect(withClient(async () => { throw new Error("Note not found"); })).rejects.toThrow("not found");
+    expect(await withClient(async (c) => c)).toBe(second);
+    // A request that failed during the call drops it, even when the error that escapes is a different one.
+    const server = http.createServer((_req, res) => { res.writeHead(500); res.end("{}"); });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await expect(withClient(async () => {
+        await refreshSession({ serverUrl: url }, "SYNTHETIC", "SYNTHETIC").catch(() => undefined);
+        throw new Error("Commit was not confirmed");
+      })).rejects.toThrow("not confirmed");
+    } finally { await new Promise((r) => server.close(r)); }
     expect(await withClient(async (c) => c)).not.toBe(second);
     expect(mocks.create).toHaveBeenCalledTimes(3);
   });

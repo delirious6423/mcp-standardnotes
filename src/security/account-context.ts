@@ -1,7 +1,7 @@
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createClientFromSession, type SnClient } from "../sn/client.js";
-import { SnApiError, takeRateLimit } from "../sn/http.js";
+import { failedRequestCount, SnApiError, takeRateLimit } from "../sn/http.js";
 import { loadSession, recoveryKey, resolveEmail } from "../sn/session.js";
 import { accountDirectory, privateDirectory, withAccountLock } from "./account-state.js";
 import { WriteJournal } from "./write-journal.js";
@@ -16,7 +16,9 @@ export async function stateDirectory(server: string, email: string): Promise<str
 }
 
 // One synced client per process: after the first call, each call sends a delta sync instead of
-// downloading the whole vault. Dropped after any error so the next call starts from a clean sync.
+// downloading the whole vault. A local error (bad UUID, stale revision, invalid change) keeps it: its sync
+// token only advances once items are stored, and approved commits end with a full re-sync. It is dropped
+// when a request failed during the call, so the next call starts from a clean sync.
 let cached: { key: string; masterKeyHex: string; client: SnClient } | undefined;
 
 /** Test hook: forget the per-process client. */
@@ -86,11 +88,12 @@ export async function withAccount<T>(fn: (client: () => Promise<SnClient>, journ
       return new WriteJournal(dir, await recoveryKey(path.basename(dir), !hasRecords));
     };
     let failure: unknown;
+    const failedBefore = failedRequestCount();
     try {
       return await fn(client, journal, email);
     } catch (error) {
       failure = error;
-      cached = undefined;
+      if (failedRequestCount() !== failedBefore) cached = undefined;
       throw error;
     } finally {
       // Also when a commit wrapped the 429 in its own error, or a batch read-back succeeded after it.
