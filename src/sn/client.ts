@@ -1109,8 +1109,11 @@ function buildClient(state: ClientState): SnClient {
     }
     if (plan.before.deleted || plan.before.uuid !== current.uuid ||
         plan.before.content_type !== current.content_type) throw new Error("Invalid recovery source");
-    const after = { ...current, content: plan.before.content, enc_item_key: plan.before.enc_item_key,
-      items_key_id: plan.before.items_key_id };
+    // Writes are always 004: a legacy 003 prior version is restored by re-encrypting its exact content.
+    const restored = plan.before.content.startsWith("003:")
+      ? await rewriteItemContent(plan.before, await decryptItemContent(plan.before, contentKeys()), contentKeys(), defaultItemsKey())
+      : { content: plan.before.content, enc_item_key: plan.before.enc_item_key, items_key_id: plan.before.items_key_id };
+    const after = { ...current, ...restored };
     if (current.content_type === "Tag") await writableTagTargets(current, after);
     return {
       change: { kind: "recovery", uuid: current.uuid, revision: await itemRevision(current) },

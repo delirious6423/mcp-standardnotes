@@ -113,6 +113,22 @@ describe("legacy 003 notes through the client", () => {
     expect(await itemRevision(stored)).toBe((await client.getNoteWithRevision(oldNote))!.revision);
   });
 
+  it("undoes an edit of a legacy note by restoring its exact content as 004", async () => {
+    const before = await client.getNoteWithRevision(oldNote);
+    // The fixture's 003 plaintext, exactly.
+    const original = { title: "Old", text: "legacy body", references: [], noteType: "plain-text",
+      appData: { "org.standardnotes.sn": { client_updated_at: "2018-01-01T00:00:00.000Z" } }, custom: { keep: true } };
+    const plan = await client.prepareChange({ kind: "note_update", uuid: oldNote, revision: before!.revision, append: " + edit" });
+    await client.commitChange(plan);
+    const undo = await client.prepareRecovery(plan);
+    expect(undo.after.content.startsWith("004:") && undo.after.enc_item_key.startsWith("004:")).toBe(true);
+    expect(undo.after.items_key_id).toBe(key004);
+    await client.commitChange(undo);
+    expect(writes).toHaveLength(2);
+    expect(await decryptItemContent(server.get(oldNote)!, keys)).toEqual(original);
+    expect(await client.getNoteWithRevision(oldNote)).toMatchObject({ text: "legacy body" });
+  });
+
   it("never lets a legacy key become the default key for new notes", async () => {
     const plan = await client.prepareChange({ kind: "note_create", title: "New", text: "fresh" });
     expect(plan.after.items_key_id).toBe(key004);
