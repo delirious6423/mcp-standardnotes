@@ -199,7 +199,8 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
     finalInit as unknown as Parameters<typeof fetch>[1],
   );
   if (res.status === 429) {
-    const retryAfter = res.headers.get("retry-after");
+    // Header text is server-controlled: only delta-seconds or an HTTP date is used, as whole seconds.
+    const retryAfter = retryAfterSeconds(res.headers.get("retry-after"));
     const hint = retryAfter ? ` Retry after ${retryAfter}s.` : "";
     throw lastRateLimit = new SnApiError(
       `Rate limited by Standard Notes server (HTTP 429).${hint} ` +
@@ -235,6 +236,13 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
     throw new SnApiError(message, err?.tag, res.status, err?.payload);
   }
   return (data ?? ({} as T)) as T;
+}
+
+function retryAfterSeconds(header: string | null): string | null {
+  const value = header?.trim() ?? "";
+  if (/^\d{1,9}$/.test(value)) return String(Number(value));
+  const at = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value) ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? String(Math.max(0, Math.ceil((at - Date.now()) / 1000))) : null;
 }
 
 /** Server-supplied text reaches tool errors: redact tokens before cutting, so no token prefix survives. */
