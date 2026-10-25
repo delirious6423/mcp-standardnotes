@@ -138,7 +138,7 @@ Sign out with `bin/standardnotes-mcp logout`. More detail, including crash recov
 |---|---|---|
 | `SN_EMAIL` | the only saved account | Which account to use when several are logged in |
 | `SN_SERVER_URL` | `https://api.standardnotes.com` | Self-hosted sync server ([docs/self-hosted.md](docs/self-hosted.md)) |
-| `SN_CERT_FINGERPRINT` | unset | Pin a self-hosted server's TLS certificate (SHA-256) |
+| `SN_CERT_FINGERPRINT` | unset | Pin a self-hosted server's TLS certificate (SHA-256); checked on top of normal validation, so a self-signed one also needs `NODE_EXTRA_CA_CERTS` |
 | `SN_STATE_DIR` | `$DATA_DIR/standardnotes-mcp`, else the OS state directory | Where encrypted operation and recovery records live |
 | `SN_CACHE_TTL_MS` | see [src/sn/cache.ts](src/sn/cache.ts) | How long a synced vault is reused within one process |
 | `SN_ALLOW_LEGACY_UUID_MISMATCH` | unset | `1` reads old 003 notes whose embedded ID differs from the server's (read-only) |

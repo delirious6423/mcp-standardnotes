@@ -47,6 +47,15 @@ echo | openssl s_client -connect sn.example.com:443 -servername sn.example.com 2
 Put the 64-hex-character result in both the login command's environment and the MCP server's `env`.
 Repeat after every certificate renewal.
 
+Pinning is checked on top of normal certificate validation, not instead of it: a self-signed or private-CA
+certificate is still refused until Node trusts it. Point `NODE_EXTRA_CA_CERTS` at the PEM file of that
+certificate (or its CA), in the same two places, and keep the pin:
+
+```json
+"env": { "SN_SERVER_URL": "https://sn.example.com", "NODE_EXTRA_CA_CERTS": "/path/to/sn-ca.pem",
+         "SN_CERT_FINGERPRINT": "64-hex-characters" }
+```
+
 ## Several accounts
 
 Each server process serves one account. Run one MCP server entry per account, each with its own
@@ -64,7 +73,8 @@ directories under the state directory automatically.
 ## If login fails
 
 - Wrong scheme or extra characters in `SN_SERVER_URL`: use `https://host` with no trailing slash.
-- Invalid certificate (expired, wrong host, untrusted CA): fix it on the server, or pin it with
-  `SN_CERT_FINGERPRINT` if it is intentionally self-signed.
+- Invalid certificate (expired, wrong host, untrusted CA): fix it on the server. If it is intentionally
+  self-signed (`DEPTH_ZERO_SELF_SIGNED_CERT`) or from a private CA, trust it with `NODE_EXTRA_CA_CERTS`
+  (section 3); `SN_CERT_FINGERPRINT` alone does not make it valid.
 - Wrong password, or an account that was never upgraded to protocol 004: check the password, then upgrade
   the encryption in the official app (Preferences → Security).
