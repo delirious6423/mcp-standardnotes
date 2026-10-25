@@ -214,9 +214,7 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
   try {
     body = text ? (JSON.parse(text) as SnEnvelope<T>) : {};
   } catch {
-    const snippet = redactString(text.slice(0, 200))
-      .replace(/\s+/g, " ")
-      .trim();
+    const snippet = serverText(text);
     throw new Error(
       `Non-JSON response from ${url} (status ${res.status})` +
         (snippet ? `: ${snippet}` : ""),
@@ -226,19 +224,22 @@ async function snFetch<T>(url: string, init: RequestInit): Promise<T> {
   // SN puts the error at the top level on auth endpoints, under `data` on sync.
   const err = body.error ?? data?.error;
   if (!res.ok || err) {
-    let message = err?.message ?? `HTTP ${res.status}`;
+    let message = err?.message ? serverText(String(err.message)) : `HTTP ${res.status}`;
     // No structured message (unknown shape, or an error object without one):
     // attach a redacted snippet of the raw body so the failure is diagnosable
     // instead of an opaque "HTTP 400".
     if (!err?.message) {
-      const snippet = redactString(text.slice(0, 200))
-        .replace(/\s+/g, " ")
-        .trim();
+      const snippet = serverText(text);
       if (snippet && snippet !== "{}") message += `: ${snippet}`;
     }
     throw new SnApiError(message, err?.tag, res.status, err?.payload);
   }
   return (data ?? ({} as T)) as T;
+}
+
+/** Server-supplied text reaches tool errors: redact tokens before cutting, so no token prefix survives. */
+function serverText(text: string): string {
+  return redactString(text).replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
 // ----- PKCE helpers (Standard Notes custom flavor — NOT RFC 7636) -----

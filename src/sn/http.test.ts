@@ -280,4 +280,18 @@ describe("snFetch (via getLoginParams)", () => {
       ),
     ).rejects.toThrow(/\[REDACTED\]/);
   });
+
+  it("redacts and bounds a server's own error message, and never leaves a token prefix at the cut", async () => {
+    const token = "SYNTHETICTOKEN".repeat(4);
+    const call = () => getLoginParams({ serverUrl: "https://example.test" }, "a@b.co", "challenge");
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: { message: `bad session ${token}\n${"x ".repeat(500)}` } }, { status: 401 }));
+    const structured = await call().catch((e: unknown) => e as Error);
+    expect(structured.message).toMatch(/^bad session \[REDACTED\] x/);
+    expect(structured.message).not.toContain("SYNTHETIC");
+    expect(structured.message.length).toBeLessThanOrEqual(200);
+    // A token straddling character 200 of a raw body: cutting first would leave its prefix unredacted.
+    fetchMock.mockResolvedValueOnce(new Response(`${"y".repeat(190)} ${token}`, { status: 403 }));
+    const raw = await call().catch((e: unknown) => e as Error);
+    expect(raw.message).not.toContain("SYNTHETIC");
+  });
 });
