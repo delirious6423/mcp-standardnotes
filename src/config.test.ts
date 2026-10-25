@@ -28,9 +28,19 @@ describe("state directory", () => {
       vi.spyOn(os, "hostname").mockReturnValue("test-host");
       await writeFile(file, "# comment\nDATA_DIR=\"/data/drive\"\nOTHER=1\n");
       expect(await configureStateDirectory()).toBe(path.join("/data/drive", "standardnotes-mcp"));
-      vi.stubEnv("SN_STATE_DIR", "");
-      await writeFile(file, "DATA_DIR=$(echo /tmp)\n");
-      await expect(configureStateDirectory()).rejects.toThrow(/absolute/);
+      // Common shell forms resolve to the same directory the old sourcing launcher used; the last assignment wins.
+      for (const body of ["export DATA_DIR=/data/drive\n", "DATA_DIR=/data/drive  # storage\n", "DATA_DIR='/data/drive'\n",
+        "DATA_DIR=/old\nexport DATA_DIR=\"/data/drive\" # moved\n"]) {
+        vi.stubEnv("SN_STATE_DIR", "");
+        await writeFile(file, body);
+        expect(await configureStateDirectory(), body).toBe(path.join("/data/drive", "standardnotes-mcp"));
+      }
+      // Anything needing a shell is refused, never run and never replaced by another directory.
+      for (const body of ["DATA_DIR=$(echo /tmp)\n", "DATA_DIR=$HOME/data\n", 'DATA_DIR="/a/$USER"\n', "DATA_DIR=/a b\n"]) {
+        vi.stubEnv("SN_STATE_DIR", "");
+        await writeFile(file, body);
+        await expect(configureStateDirectory(), body).rejects.toThrow(/without a shell/);
+      }
     } finally {
       vi.restoreAllMocks();
       await rm(home, { recursive: true, force: true });
